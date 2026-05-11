@@ -66,7 +66,7 @@ function parseTimeRange(s) {
 }
 function timesOverlap(a,b) { const r1=parseTimeRange(a),r2=parseTimeRange(b); return !!(r1&&r2&&r1.start<r2.end&&r2.start<r1.end); }
 function getSessionType(h) { const s=String(h).toLowerCase(); return s.includes("mid")?"Mid Exam":s.includes("final")?"Final Exam":"Session"; }
-function fmtDate(d) { return d instanceof Date?d.toLocaleDateString("id-ID",{weekday:"short",day:"numeric",month:"short",year:"numeric"}):""; }
+function fmtDate(d) { return d instanceof Date?d.toLocaleDateString("id-ID",{weekday:"long",day:"numeric",month:"long",year:"numeric"}):""; }
 // dk() uses local date components to avoid timezone issues with UTC-based toISOString()
 function dk(d)      { if (!(d instanceof Date)||isNaN(d)) return ""; return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
 function isDate(v)  { return v instanceof Date&&!isNaN(v); }
@@ -852,7 +852,7 @@ export default function ScheduleManager() {
                       return (
                         <tr key={`${c.courseCode}-${c.class}`} style={{background:i%2===0?"var(--color-background-primary)":"var(--color-background-secondary)",borderBottom:"0.5px solid var(--color-border-tertiary)"}}>
                           <td style={{...S.td,fontFamily:"monospace",fontSize:12,fontWeight:600}}><button style={{...S.link,fontFamily:"monospace",fontSize:12}} onClick={()=>{setFilters({courseCode:c.courseCode});setView("mcp");}}>{c.courseCode}</button></td>
-                          <td style={{...S.td,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={c.courseName}>{c.courseName}</td>
+                          <td style={{...S.td,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={c.courseName}><button style={{...S.link,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",display:"block"}} onClick={()=>{setFilters({courseCode:c.courseCode,class:c.class});setView("mcp");}} title={c.courseName}>{c.courseName}</button></td>
                           <td style={S.td}><button style={S.link} onClick={()=>{setFilters({class:c.class});setView("mcp");}}>{c.class}</button></td>
                           <td style={{...S.td,fontSize:12,color:"var(--color-text-secondary)"}}>{c.program||"—"}</td>
                           <td style={{...S.td,fontWeight:500,textAlign:"center"}}>{totalSKS||"—"}</td>
