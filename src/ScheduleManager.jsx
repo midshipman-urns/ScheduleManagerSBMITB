@@ -129,6 +129,20 @@ function processSheet(rawRows, sheetType) {
     }
   }
   
+  // Pre-scan: find all columns with dates across ALL rows (for ENMARK/Executive with multiple lecturers)
+  const dateColumns = new Set();
+  if (sheetType === "ENMARK" || sheetType === "Executive") {
+    for (let i = (sheetType === "ENMARK" ? 2 : 1); i < rawRows.length; i++) {
+      const row = rawRows[i];
+      if (!row || row.every(v => v == null || v === "")) continue;
+      for (let j = 0; j < row.length; j++) {
+        if (isDate(normalizeXLDate(row[j]))) {
+          dateColumns.add(j);
+        }
+      }
+    }
+  }
+  
   for (let i=1;i<rawRows.length;i++) {
     const row=rawRows[i];
     // Skip header and SESI metadata rows in ENMARK (rows 0-1)
@@ -155,6 +169,10 @@ function processSheet(rawRows, sheetType) {
     for (const {name:lecturer, sks:lecturerSKS} of list) {
       const dateOcc={};
       for (let j=0;j<hdrs.length;j++) {
+        // For ENMARK/Executive: use pre-scanned dateColumns to include all sessions even if this lecturer doesn't have them
+        // For others: check if this cell has a date
+        if ((sheetType === "ENMARK" || sheetType === "Executive") && !dateColumns.has(j)) continue;
+        
         const val=normalizeXLDate(row[j]);
         if (!isDate(val)) continue;
         const occKey  = dk(val);
@@ -168,6 +186,10 @@ function processSheet(rawRows, sheetType) {
         let sesiCount = baseSesi;
         if ((sheetType === "ENMARK" || sheetType === "Executive") && sesiMap[j] !== undefined) sesiCount = sesiMap[j];
         result.push({ id:`${sheetType}-${i}-${j}-${encodeURIComponent(lecturer)}`, lecturer, lecturerSKS, _rowIndex:i, hasLecturer:!!lecturer, ...shared, date:val, time, sessionType:getSessionType(hdrs[j]), hasRoom:!!shared.room, sesiCount });
+        const st = getSessionType(hdrs[j]);
+        if (sheetType === "ENMARK") {
+          console.log(`[ENMARK] Row ${i}, Col ${j}: hdr="${hdrs[j]}" sessionType="${st}" sesiCount=${sesiCount} date=${val}`);
+        }
       }
     }
   }
