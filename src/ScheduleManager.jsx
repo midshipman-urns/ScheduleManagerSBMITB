@@ -432,7 +432,17 @@ export default function ScheduleManager() {
   },[processBuffer]);
 
   // Filter helpers - now support multiple selections: {lecturer: Set([...]), class: Set([...]), ...}
-  const toggleFilter = (dim,val)=>setFilters(f=>{const n={...f};if(!n[dim])n[dim]=new Set();const s=new Set(n[dim]);s.has(val)?s.delete(val):s.add(val);n[dim]=s.size>0?s:undefined;return n;});
+  const toggleFilter = (dim,val)=>setFilters(f=>{
+    const n = {...f};
+    const currentSet = n[dim] ? new Set(n[dim]) : new Set();
+    if (currentSet.has(val)) {
+      currentSet.delete(val);
+    } else {
+      currentSet.add(val);
+    }
+    n[dim] = currentSet.size > 0 ? currentSet : undefined;
+    return n;
+  });
   const clearFilter  = (dim)   =>setFilters(f=>{const n={...f};delete n[dim];return n;});
   const clearAll     = ()      =>{setFilters({});setSearch("");setCodeSearch("");setMonthF("all");setLocF("all");};
   const toggleSort   = (col)   =>setSortCfg(s=>({col,dir:s.col===col&&s.dir==="asc"?"desc":"asc"}));
