@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import * as XLSX from "xlsx";
 import { Upload, X, Download, User, Calendar, BarChart2, ChevronLeft, ChevronRight, Check, AlertTriangle, FileSpreadsheet, MapPin } from "lucide-react";
 
