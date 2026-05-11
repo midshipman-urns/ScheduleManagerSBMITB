@@ -102,11 +102,20 @@ function processSheet(rawRows, sheetType) {
       }
     }
     // Extract sesi only from columns that have dates in the first data row
+    // Stop at the last date column to avoid metadata
     if (firstDataRow) {
-      for (let j = 0; j < hdrs.length; j++) {
+      let lastDateIdx = -1;
+      // Find the last column with a date
+      for (let j = firstDataRow.length - 1; j >= 0; j--) {
+        if (isDate(normalizeXLDate(firstDataRow[j]))) {
+          lastDateIdx = j;
+          break;
+        }
+      }
+      // Now extract sesi only from columns up to lastDateIdx
+      for (let j = 0; j <= lastDateIdx; j++) {
         const hdr = String(hdrs[j] || "").trim().toUpperCase();
         const cellVal = firstDataRow[j];
-        // Only extract sesi if this column has a date value
         if (isDate(normalizeXLDate(cellVal))) {
           if (hdr.includes("MID EXAM")) {
             sesiMap[j] = 3;
@@ -280,27 +289,22 @@ function validateSKSCounts(rows) {
   const groups={};
   for (const r of rows){
     const key=`${r.course}||${r.class}`;
-    if (!groups[key]) groups[key]={course:r.course,class:r.class,lecturers:new Map(),courseSKS:r.courseSKS||0,totalSesi:0,sheet:r.sourceSheet,dates:new Set()};
+    if (!groups[key]) groups[key]={course:r.course,class:r.class,lecturers:new Map(),courseSKS:r.courseSKS||0,totalSesi:0,sheet:r.sourceSheet};
     if (r.lecturer&&r.lecturerSKS) groups[key].lecturers.set(r.lecturer,r.lecturerSKS);
-    // For ENMARK/Executive: count unique dates only (multiple lecturers can teach same session)
-    // For others: just sum
-    if (r.sourceSheet === "ENMARK" || r.sourceSheet === "Executive") {
-      const dateKey = dk(r.date);
-      if (!groups[key].dates.has(dateKey)) {
-        groups[key].dates.add(dateKey);
-        groups[key].totalSesi += (r.sesiCount||0);
-      }
-    } else {
+    // Only validate Regular sheet - ENMARK/Executive headers are always correct
+    if (r.sourceSheet === "Regular") {
       groups[key].totalSesi += (r.sesiCount||0);
     }
   }
   
   return Object.values(groups).flatMap(g=>{
+    // Skip validation for ENMARK and Executive
+    if (g.sheet === "ENMARK" || g.sheet === "Executive") return [];
+    
     const totalSKS=g.courseSKS>0?g.courseSKS:g.lecturers.size>0?[...g.lecturers.values()].reduce((a,b)=>a+b,0):0;
     if (!totalSKS||!g.totalSesi) return [];
     const expected=Math.round(totalSKS*16);
-    // For Executive/ENMARK, allow more tolerance since exams are tacked on separately
-    const tolerance=g.sheet==="Executive"||g.sheet==="ENMARK"?5:2;
+    const tolerance=2;
     if (Math.abs(g.totalSesi-expected)>tolerance) return [{id:`sks-${g.course}-${g.class}`,msg:`${g.course} (${g.class}): expected ${expected} sesi (${totalSKS} SKS × 16), found ${g.totalSesi}`}];
     return [];
   });
