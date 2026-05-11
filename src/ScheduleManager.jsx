@@ -763,7 +763,10 @@ export default function ScheduleManager() {
                           <button style={{...S.link,fontWeight:500,fontSize:14}} onClick={()=>toggleFilter("lecturer",c.lecturer)}>{c.lecturer}</button>
                           <span style={{fontSize:12,color:"var(--color-text-secondary)"}}>{c.type==="travel"?`${fmtDate(c.rows[0]?.date)} → ${fmtDate(c.rows[1]?.date)}`:fmtDate(c.date)}</span>
                         </div>
-                        <button onClick={()=>setAcked(p=>({...p,[c.id]:!p[c.id]}))} style={isAcked?{...S.btnPrimary,fontSize:12}:{...S.btn,fontSize:12}}>{isAcked?<><Check size={12}/> Acknowledged</>:"Acknowledge"}</button>
+                        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                          <button style={{...S.btn,fontSize:11}} onClick={()=>{setFilters({lecturer:c.lecturer});setView("mcp");}}>↗ Compare in MCP</button>
+                          <button onClick={()=>setAcked(p=>({...p,[c.id]:!p[c.id]}))} style={isAcked?{...S.btnPrimary,fontSize:12}:{...S.btn,fontSize:12}}>{isAcked?<><Check size={12}/> Acknowledged</>:"Acknowledge"}</button>
+                        </div>
                       </div>
                       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginTop:12}}>
                         {c.rows.map((r,ri)=>r&&(
