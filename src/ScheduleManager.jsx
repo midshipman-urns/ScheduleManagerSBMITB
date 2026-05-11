@@ -70,8 +70,11 @@ function fmtDate(d) { return d instanceof Date?d.toLocaleDateString("id-ID",{wee
 // dk() uses local date components to avoid timezone issues with UTC-based toISOString()
 function dk(d)      { if (!(d instanceof Date)||isNaN(d)) return ""; return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
 function isDate(v)  { return v instanceof Date&&!isNaN(v); }
-// Normalize SheetJS dates to local noon to eliminate midnight boundary timezone ambiguity
-function normalizeXLDate(d) { return d instanceof Date ? new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0) : d; }
+// Normalize SheetJS dates: add 1 day (SheetJS reads dates 1 day behind) and set to local noon
+function normalizeXLDate(d) { 
+  if (!(d instanceof Date)) return d;
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 12, 0, 0);
+}
 
 function processSheet(rawRows, sheetType) {
   if (!rawRows||rawRows.length<2) return [];
