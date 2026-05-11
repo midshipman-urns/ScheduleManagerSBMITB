@@ -230,6 +230,8 @@ function LocBadge({ loc }) {
   return s ? <Badge text={loc} bg={s.bg} color={s.text} /> : <span style={{color:"var(--color-text-secondary)",fontSize:12}}>—</span>;
 }
 
+const FILTER_LABELS = { lecturer:"Lecturer", class:"Class", program:"Program", course:"Course", sheet:"Sheet" };
+
 export default function ScheduleManager() {
   const [rows, setRows] = useState([]);
   const [clashes, setClashes] = useState([]);
@@ -238,7 +240,9 @@ export default function ScheduleManager() {
   const [notes, setNotes] = useState({});
   const [dismissed, setDismissed] = useState(new Set());
   const [view, setView] = useState("mcp");
-  const [focus, setFocus] = useState(null);
+  const [filters, setFilters] = useState({});       // {lecturer, class, program, course, sheet}
+  const [sortCfg, setSortCfg] = useState({ col:"date", dir:"asc" });
+  const [statsTab, setStatsTab] = useState("lecturer");
   const [search, setSearch] = useState("");
   const [monthF, setMonthF] = useState("all");
   const [locF, setLocF] = useState("all");
@@ -263,7 +267,7 @@ export default function ScheduleManager() {
         }
         const distributed = redistributeTeamTeachingDates(all);
         setRows(distributed); setClashes(detectClashes(distributed)); setWarnings(getWarnings(distributed));
-        setAcked({}); setNotes({}); setDismissed(new Set()); setFocus(null); setView("mcp");
+        setAcked({}); setNotes({}); setDismissed(new Set()); setFilters({}); setSearch(""); setMonthF("all"); setLocF("all"); setView("mcp");
       } catch(err) { console.error(err); }
       setLoading(false);
     };
@@ -272,19 +276,49 @@ export default function ScheduleManager() {
 
   const months = useMemo(() => [...new Set(rows.map(r=>r.date.getMonth()))].sort(), [rows]);
 
-  const filtered = useMemo(() => rows.filter(r => {
-    if (focus && r.lecturer !== focus) return false;
-    if (search && !r.lecturer?.toLowerCase().includes(search.toLowerCase())) return false;
-    if (monthF !== "all" && r.date.getMonth() !== +monthF) return false;
-    if (locF !== "all" && r.location !== locF) return false;
-    return true;
-  }), [rows, focus, search, monthF, locF]);
+  // Filter helpers
+  const toggleFilter = (dim, val) => setFilters(f => ({ ...f, [dim]: f[dim]===val ? null : val }));
+  const clearFilter  = (dim)      => setFilters(f => { const n={...f}; delete n[dim]; return n; });
+  const clearAll     = ()         => { setFilters({}); setSearch(""); setMonthF("all"); setLocF("all"); };
+  const activeFilterEntries = Object.entries(filters).filter(([,v])=>v);
+  const hasAnyFilter = activeFilterEntries.length>0 || search || monthF!=="all" || locF!=="all";
+  const toggleSort   = (col) => setSortCfg(s => ({ col, dir: s.col===col&&s.dir==="asc" ? "desc" : "asc" }));
 
-  const filtClashes = useMemo(() => clashes.filter(c => (clashF==="all"||c.type===clashF) && (!focus||c.lecturer===focus)), [clashes, clashF, focus]);
+  const filtered = useMemo(() => {
+    const arr = rows.filter(r => {
+      if (filters.lecturer && r.lecturer !== filters.lecturer) return false;
+      if (filters.class    && r.class    !== filters.class)    return false;
+      if (filters.program  && r.program  !== filters.program)  return false;
+      if (filters.course   && r.course   !== filters.course)   return false;
+      if (filters.sheet    && r.sourceSheet !== filters.sheet) return false;
+      if (monthF !== "all" && r.date.getMonth() !== +monthF)   return false;
+      if (locF   !== "all" && r.location !== locF)             return false;
+      if (search) {
+        const q = search.toLowerCase();
+        if (![r.lecturer, r.class, r.program, r.course, r.room].some(v=>v?.toLowerCase().includes(q))) return false;
+      }
+      return true;
+    });
+    const { col, dir } = sortCfg;
+    const m = dir==="asc" ? 1 : -1;
+    return arr.sort((a,b) => {
+      const va = col==="date" ? (a.date?.getTime()||0) : String(a[col]||"").toLowerCase();
+      const vb = col==="date" ? (b.date?.getTime()||0) : String(b[col]||"").toLowerCase();
+      return va<vb ? -m : va>vb ? m : 0;
+    });
+  }, [rows, filters, search, monthF, locF, sortCfg]);
+
+  const filtClashes = useMemo(() => clashes.filter(c => {
+    if (clashF !== "all" && c.type !== clashF) return false;
+    if (filters.lecturer && c.lecturer !== filters.lecturer) return false;
+    if (filters.class   && !c.rows.some(r=>r?.class   === filters.class))   return false;
+    if (filters.program && !c.rows.some(r=>r?.program === filters.program)) return false;
+    return true;
+  }), [clashes, clashF, filters]);
 
   const counts = useMemo(() => ({
-    hard: clashes.filter(c=>c.type==="hard"&&!acked[c.id]).length,
-    city: clashes.filter(c=>c.type==="city"&&!acked[c.id]).length,
+    hard:   clashes.filter(c=>c.type==="hard"  &&!acked[c.id]).length,
+    city:   clashes.filter(c=>c.type==="city"  &&!acked[c.id]).length,
     travel: clashes.filter(c=>c.type==="travel"&&!acked[c.id]).length,
   }), [clashes, acked]);
 
@@ -300,11 +334,35 @@ export default function ScheduleManager() {
     return Object.values(map).sort((a,b)=>b.total-a.total);
   }, [rows]);
 
+  const classStats = useMemo(() => {
+    const map = {};
+    for (const r of rows) {
+      if (!r.class) continue;
+      const s = map[r.class] || (map[r.class]={ name:r.class, total:0, lecturers:new Set(), programs:new Set(), jakarta:0, bandung:0 });
+      s.total++; r.lecturer&&s.lecturers.add(r.lecturer); r.program&&s.programs.add(r.program);
+      if(r.location==="Jakarta")s.jakarta++; if(r.location==="Bandung")s.bandung++;
+    }
+    return Object.values(map).sort((a,b)=>b.total-a.total);
+  }, [rows]);
+
+  const programStats = useMemo(() => {
+    const map = {};
+    for (const r of rows) {
+      if (!r.program) continue;
+      const s = map[r.program] || (map[r.program]={ name:r.program, total:0, lecturers:new Set(), classes:new Set(), jakarta:0, bandung:0 });
+      s.total++; r.lecturer&&s.lecturers.add(r.lecturer); r.class&&s.classes.add(r.class);
+      if(r.location==="Jakarta")s.jakarta++; if(r.location==="Bandung")s.bandung++;
+    }
+    return Object.values(map).sort((a,b)=>b.total-a.total);
+  }, [rows]);
+
   const calData = useMemo(() => {
     const y=calDate.getFullYear(), m=calDate.getMonth(), byDay={}, clashDays={};
     for (const r of rows) {
       if (r.date.getFullYear()!==y||r.date.getMonth()!==m) continue;
-      if (focus&&r.lecturer!==focus) continue;
+      if (filters.lecturer&&r.lecturer!==filters.lecturer) continue;
+      if (filters.class   &&r.class   !==filters.class)    continue;
+      if (filters.program &&r.program !==filters.program)  continue;
       (byDay[r.date.getDate()]=byDay[r.date.getDate()]||[]).push(r);
     }
     for (const c of clashes) {
@@ -314,9 +372,17 @@ export default function ScheduleManager() {
       if (!acked[c.id]) clashDays[d][c.type]++;
     }
     return {byDay, clashDays};
-  }, [rows, clashes, calDate, focus, acked]);
+  }, [rows, clashes, calDate, filters, acked]);
 
-  const toggleFocus = lec => setFocus(f => f===lec ? null : lec);
+  // Sortable header cell
+  const SortTh = ({ col, label }) => {
+    const active = sortCfg.col === col;
+    return (
+      <th onClick={()=>toggleSort(col)} style={{ ...S.th, cursor:"pointer", userSelect:"none" }}>
+        {label} <span style={{ opacity:active?1:0.25, fontSize:9 }}>{active?(sortCfg.dir==="asc"?"↑":"↓"):"↕"}</span>
+      </th>
+    );
+  };
 
   const exportMCP = () => {
     const data = filtered.map((r,i) => ({ No:i+1, Lecturer:r.lecturer||"(Unassigned)", Class:r.class, Program:r.program, Course:r.course, Date:fmtDate(r.date), Time:r.time, Room:r.room, Location:r.location, "Session Type":r.sessionType, Source:r.sourceSheet }));
@@ -387,21 +453,31 @@ export default function ScheduleManager() {
         </div>
       ))}
 
-      {/* Focus banner */}
-      {focus && (
-        <div style={{ padding:"8px 20px", background:"var(--color-background-info)", borderBottom:"0.5px solid var(--color-border-info)", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-          <span style={{ fontSize:13, color:"var(--color-text-info)", display:"flex", alignItems:"center", gap:6 }}><User size={14} /> Focused on: <strong>{focus}</strong></span>
-          <button onClick={()=>setFocus(null)} style={{ background:"none", border:"none", cursor:"pointer", color:"var(--color-text-info)", fontSize:13, padding:0, display:"flex", alignItems:"center", gap:4 }}><X size={13} /> Clear focus</button>
+      {/* Active filter badge strip */}
+      {hasAnyFilter && (
+        <div style={{ padding:"7px 20px", background:"var(--color-background-info)", borderBottom:"0.5px solid var(--color-border-info)", display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+          <span style={{ fontSize:11, color:"var(--color-text-secondary)", textTransform:"uppercase", letterSpacing:"0.05em", whiteSpace:"nowrap" }}>Filtered by</span>
+          {activeFilterEntries.map(([dim, val]) => (
+            <span key={dim} style={{ display:"inline-flex", alignItems:"center", gap:5, background:"var(--color-background-primary)", border:"0.5px solid var(--color-border-secondary)", borderRadius:20, padding:"2px 8px 2px 10px", fontSize:12 }}>
+              <span style={{ color:"var(--color-text-secondary)", fontSize:10, textTransform:"uppercase", letterSpacing:"0.05em" }}>{FILTER_LABELS[dim]}</span>
+              <span style={{ color:"var(--color-text-primary)", fontWeight:500, maxWidth:180, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={val}>{val}</span>
+              <button onClick={()=>clearFilter(dim)} style={{ background:"none", border:"none", cursor:"pointer", color:"var(--color-text-secondary)", padding:"0 2px", lineHeight:1, fontSize:14 }}>×</button>
+            </span>
+          ))}
+          {(search||monthF!=="all"||locF!=="all") && (
+            <span style={{ fontSize:12, color:"var(--color-text-secondary)" }}>+ search/date/location filters active</span>
+          )}
+          <button onClick={clearAll} style={{ marginLeft:"auto", ...S.btn, fontSize:11, padding:"3px 10px" }}><X size={11}/> Clear all</button>
         </div>
       )}
 
       {/* Tabs */}
       <div style={{ background:"var(--color-background-primary)", borderBottom:"0.5px solid var(--color-border-tertiary)", padding:"0 20px", display:"flex", gap:0 }}>
         {[
-          { id:"mcp",     icon:<FileSpreadsheet size={14}/>, label:"MCP Output",    count:filtered.length },
-          { id:"clashes", icon:<AlertTriangle size={14}/>,  label:"Clashes",        count:filtClashes.length, alert:!allClear },
+          { id:"mcp",     icon:<FileSpreadsheet size={14}/>, label:"MCP Output",  count:filtered.length },
+          { id:"clashes", icon:<AlertTriangle size={14}/>,  label:"Clashes",      count:filtClashes.length, alert:!allClear },
           { id:"calendar",icon:<Calendar size={14}/>,       label:"Calendar" },
-          { id:"stats",   icon:<BarChart2 size={14}/>,      label:"Lecturer Stats", count:lecStats.length },
+          { id:"stats",   icon:<BarChart2 size={14}/>,      label:"Stats" },
         ].map(tab => (
           <button key={tab.id} onClick={()=>setView(tab.id)} style={{ padding:"11px 16px", border:"none", borderBottom:view===tab.id?"2px solid #1d4ed8":"2px solid transparent", background:"transparent", cursor:"pointer", fontSize:13, fontWeight:view===tab.id?500:400, color:view===tab.id?"#1d4ed8":"var(--color-text-secondary)", display:"flex", alignItems:"center", gap:6, whiteSpace:"nowrap" }}>
             {tab.icon} {tab.label}
@@ -417,7 +493,7 @@ export default function ScheduleManager() {
         {view==="mcp" && (
           <div>
             <div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap", alignItems:"center" }}>
-              <div style={{ width:220 }}><input style={S.input} placeholder="Search lecturer…" value={search} onChange={e=>setSearch(e.target.value)} /></div>
+              <div style={{ width:240 }}><input style={S.input} placeholder="Search lecturer, class, course…" value={search} onChange={e=>setSearch(e.target.value)} /></div>
               <select style={S.select} value={monthF} onChange={e=>setMonthF(e.target.value)}>
                 <option value="all">All months</option>
                 {months.map(m=><option key={m} value={m}>{MONTHS[m]}</option>)}
@@ -427,13 +503,24 @@ export default function ScheduleManager() {
                 <option value="Jakarta">Jakarta</option>
                 <option value="Bandung">Bandung</option>
               </select>
-              {(search||monthF!=="all"||locF!=="all"||focus) && <button style={S.btn} onClick={()=>{setSearch("");setMonthF("all");setLocF("all");setFocus(null)}}><X size={13}/> Clear</button>}
+              {hasAnyFilter && <button style={S.btn} onClick={clearAll}><X size={13}/> Clear all</button>}
               <div style={{ marginLeft:"auto" }}><button style={S.btnPrimary} onClick={exportMCP}><Download size={14}/> Export MCP</button></div>
             </div>
             <div style={S.card}>
               <div style={{ overflowX:"auto" }}>
                 <table style={{ width:"100%", borderCollapse:"collapse" }}>
-                  <thead><tr>{["Lecturer","Class","Program","Course","Date","Time","Room","Location","Type","Source"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+                  <thead><tr>
+                    <SortTh col="lecturer"    label="Lecturer" />
+                    <SortTh col="class"       label="Class" />
+                    <SortTh col="program"     label="Program" />
+                    <SortTh col="course"      label="Course" />
+                    <SortTh col="date"        label="Date" />
+                    <SortTh col="time"        label="Time" />
+                    <th style={S.th}>Room</th>
+                    <SortTh col="location"    label="Location" />
+                    <SortTh col="sessionType" label="Type" />
+                    <SortTh col="sourceSheet" label="Source" />
+                  </tr></thead>
                   <tbody>
                     {filtered.slice(0,300).map((r,i) => {
                       const hasC = clashes.some(c=>!acked[c.id]&&c.rows.some(cr=>cr?.id===r.id));
@@ -441,18 +528,22 @@ export default function ScheduleManager() {
                         <tr key={r.id} style={{ background: hasC?"#fff5f5": i%2===0?"var(--color-background-primary)":"var(--color-background-secondary)" }}>
                           <td style={{...S.td, fontWeight:500}}>
                             {r.lecturer
-                              ? <button style={{...S.link, display:"flex", alignItems:"center", gap:4}} onClick={()=>{toggleFocus(r.lecturer)}}>{r.lecturer}{hasC&&" ⚠"}</button>
+                              ? <button style={{...S.link}} onClick={()=>toggleFilter("lecturer",r.lecturer)}>{r.lecturer}{hasC&&" ⚠"}</button>
                               : <span style={{color:"var(--color-text-danger)",fontSize:12}}>Unassigned</span>}
                           </td>
-                          <td style={S.td}>{r.class}</td>
-                          <td style={S.td}>{r.program}</td>
-                          <td style={{...S.td, maxWidth:190, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}} title={r.course}>{r.course}</td>
+                          <td style={S.td}><button style={{...S.link,color:filters.class===r.class?"#1d4ed8":"var(--color-text-primary)"}} onClick={()=>toggleFilter("class",r.class)}>{r.class}</button></td>
+                          <td style={S.td}><button style={{...S.link,color:filters.program===r.program?"#1d4ed8":"var(--color-text-primary)"}} onClick={()=>toggleFilter("program",r.program)}>{r.program||"—"}</button></td>
+                          <td style={{...S.td, maxWidth:190, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}} title={r.course}>
+                            <button style={{...S.link,color:filters.course===r.course?"#1d4ed8":"var(--color-text-primary)",maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",display:"block"}} onClick={()=>toggleFilter("course",r.course)} title={r.course}>{r.course}</button>
+                          </td>
                           <td style={{...S.td, whiteSpace:"nowrap"}}>{fmtDate(r.date)}</td>
                           <td style={{...S.td, whiteSpace:"nowrap", fontSize:12}}>{r.time||<span style={{color:"var(--color-text-secondary)"}}>—</span>}</td>
                           <td style={{...S.td, fontSize:12}}>{r.room||<span style={{color:"var(--color-border-secondary)"}}>—</span>}</td>
                           <td style={S.td}><LocBadge loc={r.location}/></td>
                           <td style={S.td}><Badge text={r.sessionType} bg={SESSION_STYLE[r.sessionType]?.bg} color={SESSION_STYLE[r.sessionType]?.text}/></td>
-                          <td style={{...S.td, fontSize:11, color:"var(--color-text-secondary)"}}>{r.sourceSheet}</td>
+                          <td style={{...S.td, fontSize:11}}>
+                            <button style={{...S.link,fontSize:11,color:filters.sheet===r.sourceSheet?"#1d4ed8":"var(--color-text-secondary)"}} onClick={()=>toggleFilter("sheet",r.sourceSheet)}>{r.sourceSheet}</button>
+                          </td>
                         </tr>
                       );
                     })}
@@ -469,7 +560,7 @@ export default function ScheduleManager() {
         {view==="clashes" && (
           <div>
             <div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap", alignItems:"center" }}>
-              {[["all","All types"],["hard","Hard clashes"],["city","City clashes"],["travel","Travel warnings"]].map(([id,label]) => (
+              {[["all","All types"],["hard","Hard"],["city","City"],["travel","Travel"]].map(([id,label]) => (
                 <button key={id} onClick={()=>setClashF(id)} style={clashF===id?{...S.btnPrimary}:S.btn}>{label}</button>
               ))}
               <div style={{ marginLeft:"auto" }}><button style={{ ...S.btn, color:"var(--color-text-warning)", borderColor:"var(--color-border-warning)" }} onClick={exportClashes}><Download size={14}/> Export report</button></div>
@@ -485,7 +576,7 @@ export default function ScheduleManager() {
                       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:12, flexWrap:"wrap" }}>
                         <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
                           <Badge text={cfg.label} bg={cfg.bg} color={cfg.text}/>
-                          <button style={{...S.link, fontWeight:500, fontSize:14}} onClick={()=>toggleFocus(c.lecturer)}>{c.lecturer}</button>
+                          <button style={{...S.link, fontWeight:500, fontSize:14}} onClick={()=>toggleFilter("lecturer",c.lecturer)}>{c.lecturer}</button>
                           <span style={{ fontSize:12, color:"var(--color-text-secondary)" }}>
                             {c.type==="travel" ? `${fmtDate(c.rows[0]?.date)} → ${fmtDate(c.rows[1]?.date)}` : fmtDate(c.date)}
                           </span>
@@ -501,7 +592,9 @@ export default function ScheduleManager() {
                             <div style={{ color:"var(--color-text-secondary)", display:"flex", gap:6, alignItems:"center" }}><MapPin size={11}/> <LocBadge loc={r.location}/></div>
                             <div style={{ color:"var(--color-text-secondary)" }}>Time: {r.time||"—"}</div>
                             <div style={{ color:"var(--color-text-secondary)" }}>Room: {r.room||"—"}</div>
-                            <div style={{ color:"var(--color-text-secondary)" }}>Class: {r.class}</div>
+                            <div style={{ color:"var(--color-text-secondary)" }}>
+                              Class: <button style={{...S.link,fontSize:12}} onClick={()=>toggleFilter("class",r.class)}>{r.class}</button>
+                            </div>
                             {c.type==="travel" && <div style={{ color:"var(--color-text-secondary)" }}>Date: {fmtDate(r.date)}</div>}
                           </div>
                         ))}
@@ -536,6 +629,7 @@ export default function ScheduleManager() {
                 <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, borderRadius:2, background:"#bbf7d0", display:"inline-block" }}/> Bandung</span>
                 <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, borderRadius:2, background:"#fde68a", display:"inline-block" }}/> Both cities</span>
                 <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:8, height:8, borderRadius:"50%", background:"#ef4444", display:"inline-block" }}/> Has clash</span>
+                <span style={{ fontSize:11, color:"var(--color-text-secondary)", marginLeft:4 }}>Click a name to filter · click date chip to zoom</span>
               </div>
               <div style={{ display:"grid", gridTemplateColumns:"repeat(7, 1fr)", gap:6 }}>
                 {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(d=><div key={d} style={{ textAlign:"center", fontWeight:500, fontSize:11, color:"var(--color-text-secondary)", padding:"4px 0", textTransform:"uppercase", letterSpacing:"0.08em" }}>{d}</div>)}
@@ -551,7 +645,7 @@ export default function ScheduleManager() {
                       <div style={{ fontWeight:500, fontSize:13, marginBottom:4 }}>{day}</div>
                       {lecs.slice(0,3).map((l,li) => {
                         const loc=dr.find(r=>r.lecturer===l)?.location;
-                        return <div key={li} onClick={()=>{toggleFocus(l);setView("mcp")}} style={{ fontSize:9, background:loc==="Jakarta"?"#bfdbfe":"#bbf7d0", borderRadius:3, padding:"1px 4px", marginBottom:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", cursor:"pointer" }}>{l}</div>;
+                        return <div key={li} onClick={()=>toggleFilter("lecturer",l)} style={{ fontSize:9, background:loc==="Jakarta"?"#bfdbfe":"#bbf7d0", borderRadius:3, padding:"1px 4px", marginBottom:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", cursor:"pointer" }}>{l}</div>;
                       })}
                       {lecs.length>3 && <div style={{ fontSize:9, color:"var(--color-text-secondary)" }}>+{lecs.length-3} more</div>}
                       {hasClash && <div style={{ position:"absolute", top:5, right:5, width:7, height:7, borderRadius:"50%", background:"#ef4444" }}/>}
@@ -566,40 +660,95 @@ export default function ScheduleManager() {
         {/* ── STATS ── */}
         {view==="stats" && (
           <div>
-            <div style={{ display:"flex", gap:8, marginBottom:14, alignItems:"center" }}>
-              <div style={{ width:220 }}><input style={S.input} placeholder="Search lecturer…" value={search} onChange={e=>setSearch(e.target.value)} /></div>
-              <span style={{ fontSize:12, color:"var(--color-text-secondary)", marginLeft:4 }}>{lecStats.filter(s=>!search||s.name.toLowerCase().includes(search.toLowerCase())).length} lecturers</span>
-            </div>
-            <div style={S.card}>
-              <div style={{ overflowX:"auto" }}>
-                <table style={{ width:"100%", borderCollapse:"collapse" }}>
-                  <thead><tr>{["Lecturer","Total","Sessions","Mid","Final","Jakarta","Bandung","Programs","Classes","Clashes"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
-                  <tbody>
-                    {lecStats.filter(s=>!search||s.name.toLowerCase().includes(search.toLowerCase())).map((s,i) => {
-                      const lc=clashes.filter(c=>c.lecturer===s.name&&!acked[c.id]);
-                      return (
-                        <tr key={s.name} style={{ background:i%2===0?"var(--color-background-primary)":"var(--color-background-secondary)", borderBottom:"0.5px solid var(--color-border-tertiary)" }}>
-                          <td style={{...S.td, fontWeight:500}}><button style={S.link} onClick={()=>{toggleFocus(s.name);setView("mcp")}}>{s.name}</button></td>
-                          <td style={{...S.td, fontWeight:500}}>{s.total}</td>
-                          <td style={S.td}>{s.sessions}</td>
-                          <td style={S.td}>{s.mid||<span style={{color:"var(--color-text-secondary)"}}>—</span>}</td>
-                          <td style={S.td}>{s.final||<span style={{color:"var(--color-text-secondary)"}}>—</span>}</td>
-                          <td style={S.td}>{s.jakarta?<Badge text={s.jakarta} bg="#dbeafe" color="#1e40af"/>:<span style={{color:"var(--color-border-secondary)"}}>—</span>}</td>
-                          <td style={S.td}>{s.bandung?<Badge text={s.bandung} bg="#dcfce7" color="#166534"/>:<span style={{color:"var(--color-border-secondary)"}}>—</span>}</td>
-                          <td style={{...S.td, fontSize:12, color:"var(--color-text-secondary)"}}>{[...s.programs].join(", ")||"—"}</td>
-                          <td style={{...S.td, fontSize:11, color:"var(--color-text-secondary)", maxWidth:130, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}} title={[...s.classes].join(", ")}>{[...s.classes].join(", ")}</td>
-                          <td style={S.td}>
-                            {lc.length>0
-                              ? <button style={{...S.link, color:"var(--color-text-danger)", fontWeight:500}} onClick={()=>{toggleFocus(s.name);setView("clashes")}}>⚠ {lc.length}</button>
-                              : <span style={{color:"var(--color-text-success)", fontWeight:500}}><Check size={13}/></span>}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+            {/* Stats subtabs */}
+            <div style={{ display:"flex", gap:4, marginBottom:14, borderBottom:"0.5px solid var(--color-border-tertiary)", paddingBottom:0 }}>
+              {[["lecturer",`Lecturers (${lecStats.length})`],["class",`Classes (${classStats.length})`],["program",`Programs (${programStats.length})`]].map(([id,label])=>(
+                <button key={id} onClick={()=>setStatsTab(id)} style={{ padding:"8px 16px", border:"none", borderBottom:statsTab===id?"2px solid #1d4ed8":"2px solid transparent", background:"transparent", cursor:"pointer", fontSize:13, fontWeight:statsTab===id?500:400, color:statsTab===id?"#1d4ed8":"var(--color-text-secondary)", marginBottom:-1 }}>{label}</button>
+              ))}
+              <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", paddingBottom:8 }}>
+                <div style={{ width:200 }}><input style={{...S.input, fontSize:12}} placeholder="Search…" value={search} onChange={e=>setSearch(e.target.value)} /></div>
               </div>
             </div>
+
+            {/* By Lecturer */}
+            {statsTab==="lecturer" && (
+              <div style={S.card}>
+                <div style={{ overflowX:"auto" }}>
+                  <table style={{ width:"100%", borderCollapse:"collapse" }}>
+                    <thead><tr>{["Lecturer","Total","Sessions","Mid","Final","Jakarta","Bandung","Programs","Classes","Clashes"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+                    <tbody>
+                      {lecStats.filter(s=>!search||s.name.toLowerCase().includes(search.toLowerCase())).map((s,i) => {
+                        const lc=clashes.filter(c=>c.lecturer===s.name&&!acked[c.id]);
+                        return (
+                          <tr key={s.name} style={{ background:i%2===0?"var(--color-background-primary)":"var(--color-background-secondary)", borderBottom:"0.5px solid var(--color-border-tertiary)" }}>
+                            <td style={{...S.td, fontWeight:500}}><button style={S.link} onClick={()=>{toggleFilter("lecturer",s.name);setView("mcp")}}>{s.name}</button></td>
+                            <td style={{...S.td, fontWeight:500}}>{s.total}</td>
+                            <td style={S.td}>{s.sessions}</td>
+                            <td style={S.td}>{s.mid||<span style={{color:"var(--color-text-secondary)"}}>—</span>}</td>
+                            <td style={S.td}>{s.final||<span style={{color:"var(--color-text-secondary)"}}>—</span>}</td>
+                            <td style={S.td}>{s.jakarta?<Badge text={s.jakarta} bg="#dbeafe" color="#1e40af"/>:<span style={{color:"var(--color-border-secondary)"}}>—</span>}</td>
+                            <td style={S.td}>{s.bandung?<Badge text={s.bandung} bg="#dcfce7" color="#166534"/>:<span style={{color:"var(--color-border-secondary)"}}>—</span>}</td>
+                            <td style={{...S.td, fontSize:12, color:"var(--color-text-secondary)"}}>{[...s.programs].join(", ")||"—"}</td>
+                            <td style={{...S.td, fontSize:11, color:"var(--color-text-secondary)", maxWidth:130, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}} title={[...s.classes].join(", ")}>{[...s.classes].join(", ")}</td>
+                            <td style={S.td}>
+                              {lc.length>0
+                                ? <button style={{...S.link, color:"var(--color-text-danger)", fontWeight:500}} onClick={()=>{toggleFilter("lecturer",s.name);setView("clashes")}}>⚠ {lc.length}</button>
+                                : <span style={{color:"var(--color-text-success)", fontWeight:500}}><Check size={13}/></span>}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* By Class */}
+            {statsTab==="class" && (
+              <div style={S.card}>
+                <div style={{ overflowX:"auto" }}>
+                  <table style={{ width:"100%", borderCollapse:"collapse" }}>
+                    <thead><tr>{["Class","Total Sessions","Lecturers","Programs","Jakarta","Bandung"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+                    <tbody>
+                      {classStats.filter(s=>!search||s.name.toLowerCase().includes(search.toLowerCase())).map((s,i) => (
+                        <tr key={s.name} style={{ background:i%2===0?"var(--color-background-primary)":"var(--color-background-secondary)", borderBottom:"0.5px solid var(--color-border-tertiary)" }}>
+                          <td style={{...S.td, fontWeight:500}}><button style={S.link} onClick={()=>{toggleFilter("class",s.name);setView("mcp")}}>{s.name}</button></td>
+                          <td style={{...S.td, fontWeight:500}}>{s.total}</td>
+                          <td style={{...S.td, fontSize:12, color:"var(--color-text-secondary)"}}>{[...s.lecturers].length} — <span style={{fontSize:11}}>{[...s.lecturers].join(", ")}</span></td>
+                          <td style={{...S.td, fontSize:12, color:"var(--color-text-secondary)"}}>{[...s.programs].join(", ")||"—"}</td>
+                          <td style={S.td}>{s.jakarta?<Badge text={s.jakarta} bg="#dbeafe" color="#1e40af"/>:<span style={{color:"var(--color-border-secondary)"}}>—</span>}</td>
+                          <td style={S.td}>{s.bandung?<Badge text={s.bandung} bg="#dcfce7" color="#166534"/>:<span style={{color:"var(--color-border-secondary)"}}>—</span>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* By Program */}
+            {statsTab==="program" && (
+              <div style={S.card}>
+                <div style={{ overflowX:"auto" }}>
+                  <table style={{ width:"100%", borderCollapse:"collapse" }}>
+                    <thead><tr>{["Program","Total Sessions","Lecturers","Classes","Jakarta","Bandung"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+                    <tbody>
+                      {programStats.filter(s=>!search||s.name.toLowerCase().includes(search.toLowerCase())).map((s,i) => (
+                        <tr key={s.name} style={{ background:i%2===0?"var(--color-background-primary)":"var(--color-background-secondary)", borderBottom:"0.5px solid var(--color-border-tertiary)" }}>
+                          <td style={{...S.td, fontWeight:500}}><button style={S.link} onClick={()=>{toggleFilter("program",s.name);setView("mcp")}}>{s.name}</button></td>
+                          <td style={{...S.td, fontWeight:500}}>{s.total}</td>
+                          <td style={{...S.td, fontSize:12, color:"var(--color-text-secondary)"}}>{[...s.lecturers].length} lecturers</td>
+                          <td style={{...S.td, fontSize:12, color:"var(--color-text-secondary)"}}>{[...s.classes].join(", ")||"—"}</td>
+                          <td style={S.td}>{s.jakarta?<Badge text={s.jakarta} bg="#dbeafe" color="#1e40af"/>:<span style={{color:"var(--color-border-secondary)"}}>—</span>}</td>
+                          <td style={S.td}>{s.bandung?<Badge text={s.bandung} bg="#dcfce7" color="#166534"/>:<span style={{color:"var(--color-border-secondary)"}}>—</span>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
