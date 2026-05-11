@@ -86,8 +86,27 @@ function processSheet(rawRows, sheetType) {
     ruang:find("ruang","ruangan"), status:find("status sesi","status"), sks:find("sks"), sesi:find("sesi"),
   };
   const result=[], seen=new Set();
+  
+  // For ENMARK: read sesiCount directly from column headers (e.g., "5", "MID EXAM" → 3, "FINAL EXAM" → 3)
+  const enmarkSesiMap = {};
+  if (sheetType === "ENMARK") {
+    for (let j = 0; j < hdrs.length; j++) {
+      const hdr = String(hdrs[j] || "").trim().toUpperCase();
+      if (hdr.includes("MID EXAM")) {
+        enmarkSesiMap[j] = 3; // Exam sesi
+      } else if (hdr.includes("FINAL EXAM")) {
+        enmarkSesiMap[j] = 3; // Exam sesi
+      } else if (/^\d+$/.test(hdr)) {
+        // Pure number: "5" → 5 sesi, "2" → 2 sesi
+        enmarkSesiMap[j] = parseInt(hdr) || 0;
+      }
+    }
+  }
+  
   for (let i=1;i<rawRows.length;i++) {
     const row=rawRows[i];
+    // Skip SESI metadata row in ENMARK (row index 1)
+    if (sheetType === "ENMARK" && i === 1) continue;
     if (!row||row.every(v=>v==null||v==="")) continue;
     const kode = row[ci.kode]?String(row[ci.kode]).trim():"";
     if (!kode||kode==="MMXXXX") continue;
@@ -119,15 +138,9 @@ function processSheet(rawRows, sheetType) {
         const dedup = `${lecturer}|${shared.course}|${shared.class}|${dk(val)}|${time}`;
         if (seen.has(dedup)) continue;
         seen.add(dedup);
-        // Compute sesiCount for this pertemuan: baseSesi for regular sessions, but may be split on exam dates
-        // Header tells us: if column header says "MID EXAM" or "FINAL EXAM", sesi is exam sesi (not full baseSesi for mixed columns)
-        const hdrStr = String(hdrs[j]||"").toLowerCase();
-        const isExam = hdrStr.includes("mid exam") || hdrStr.includes("final exam");
+        // Compute sesiCount: from Sesi column, or inferred from ENMARK header
         let sesiCount = baseSesi;
-        // For mixed exam+regular columns (4 or 6 sesi classes), exam dates get fewer sesi
-        // 4 sesi column: exam dates get 3 sesi (1 regular + 3 exam) — but this row is exam, so 3
-        // 6 sesi column: exam dates get 3 sesi (3 regular + 3 exam) — but this row is exam, so 3
-        // Simplified: if it's an exam column, sesiCount stays as-is (the Sesi column value is exam count)
+        if (sheetType === "ENMARK" && enmarkSesiMap[j]) sesiCount = enmarkSesiMap[j];
         result.push({ id:`${sheetType}-${i}-${j}-${encodeURIComponent(lecturer)}`, lecturer, lecturerSKS, _rowIndex:i, hasLecturer:!!lecturer, ...shared, date:val, time, sessionType:getSessionType(hdrs[j]), hasRoom:!!shared.room, sesiCount });
       }
     }
@@ -245,20 +258,37 @@ function addPertemuanNumbers(rows) {
   });
 }
 
-// Validate actual pertemuan count against expected (totalSKS × 16). Requires addPertemuanNumbers to have run.
-function validateSKSCounts(rows) {
+// Validate total sesi (not pertemuan count). Expected: totalSKS × 16 sesi
+// For ENMARK: use header sesi counts; for others: sum from rows
+function validateSKSCounts(rows, enmarkSesiMap) {
   const groups={};
   for (const r of rows){
     const key=`${r.course}||${r.class}`;
-    if (!groups[key]) groups[key]={course:r.course,class:r.class,lecturers:new Map(),courseSKS:r.courseSKS||0,totalPt:0};
+    if (!groups[key]) groups[key]={course:r.course,class:r.class,lecturers:new Map(),courseSKS:r.courseSKS||0,totalSesi:0,sheet:r.sourceSheet};
     if (r.lecturer&&r.lecturerSKS) groups[key].lecturers.set(r.lecturer,r.lecturerSKS);
-    groups[key].totalPt=Math.max(groups[key].totalPt,r.totalPertemuan||0);
+    // For ENMARK, we'll compute sesi from headers separately
+    if (r.sourceSheet !== "ENMARK") {
+      groups[key].totalSesi += (r.sesiCount||0); // Sum sesi from rows
+    }
   }
+  
+  // For ENMARK: compute total sesi from header map (do this once per unique course+class)
+  if (enmarkSesiMap && Object.keys(enmarkSesiMap).length > 0) {
+    const headerTotal = Object.values(enmarkSesiMap).reduce((a,b)=>a+b, 0);
+    for (const g of Object.values(groups)) {
+      if (g.sheet === "ENMARK") {
+        g.totalSesi = headerTotal; // All ENMARK courses have same header structure
+      }
+    }
+  }
+  
   return Object.values(groups).flatMap(g=>{
     const totalSKS=g.courseSKS>0?g.courseSKS:g.lecturers.size>0?[...g.lecturers.values()].reduce((a,b)=>a+b,0):0;
-    if (!totalSKS||!g.totalPt) return [];
+    if (!totalSKS||!g.totalSesi) return [];
     const expected=Math.round(totalSKS*16);
-    if (Math.abs(g.totalPt-expected)>1) return [{id:`sks-${g.course}-${g.class}`,msg:`${g.course} (${g.class}): expected ${expected} pertemuan (${totalSKS} SKS × 16), found ${g.totalPt}`}];
+    // For Executive/ENMARK, allow more tolerance since exams are tacked on separately
+    const tolerance=g.sheet==="Executive"||g.sheet==="ENMARK"?5:2;
+    if (Math.abs(g.totalSesi-expected)>tolerance) return [{id:`sks-${g.course}-${g.class}`,msg:`${g.course} (${g.class}): expected ${expected} sesi (${totalSKS} SKS × 16), found ${g.totalSesi}`}];
     return [];
   });
 }
@@ -353,14 +383,31 @@ export default function ScheduleManager() {
   const processBuffer = useCallback((buffer, name)=>{
     const wb = XLSX.read(new Uint8Array(buffer),{type:"array",cellDates:true});
     const all=[];
+    let enmarkHeaderMap = null;
     for (const [sName,sType] of [["Regular","Regular"],["Executive","Executive"],["ENMARK","ENMARK"]])
       if (wb.SheetNames.includes(sName)){
         const data=XLSX.utils.sheet_to_json(wb.Sheets[sName],{header:1,raw:true,cellDates:true,defval:null});
+        // For ENMARK: read sesi counts from the SESI row (row index 1, after PERTEMUAN header at index 0)
+        if (sType === "ENMARK" && data.length > 1) {
+          const sesiRow = data[1] || [];
+          enmarkHeaderMap = {};
+          for (let j = 0; j < sesiRow.length; j++) {
+            const val = sesiRow[j];
+            const valStr = String(val || "").trim().toUpperCase();
+            if (valStr.includes("MID EXAM")) {
+              enmarkHeaderMap[j] = 3;
+            } else if (valStr.includes("FINAL EXAM")) {
+              enmarkHeaderMap[j] = 3;
+            } else if (/^\d+$/.test(valStr)) {
+              enmarkHeaderMap[j] = parseInt(valStr) || 0;
+            }
+          }
+        }
         all.push(...processSheet(data,sType));
       }
     const distributed   = redistributeTeamTeachingDates(all);
     const withPertemuan = addPertemuanNumbers(distributed);
-    const sksWarns      = validateSKSCounts(withPertemuan);
+    const sksWarns      = validateSKSCounts(withPertemuan, enmarkHeaderMap);
     setRows(withPertemuan); setClashes(detectClashes(withPertemuan));
     setWarnings([...getWarnings(withPertemuan),...sksWarns]);
     setAcked({}); setNotes({}); setDismissed(new Set()); setFilters({}); setSearch(""); setCodeSearch(""); setMonthF("all"); setLocF("all"); setView("mcp");
