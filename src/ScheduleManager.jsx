@@ -431,24 +431,24 @@ export default function ScheduleManager() {
     reader.readAsArrayBuffer(file); e.target.value="";
   },[processBuffer]);
 
-  // ── Filter helpers ───────────────────────────────────────────────────────────
-  const toggleFilter = (dim,val)=>setFilters(f=>({...f,[dim]:f[dim]===val?null:val}));
+  // Filter helpers - now support multiple selections: {lecturer: Set([...]), class: Set([...]), ...}
+  const toggleFilter = (dim,val)=>setFilters(f=>{const n={...f};if(!n[dim])n[dim]=new Set();const s=new Set(n[dim]);s.has(val)?s.delete(val):s.add(val);n[dim]=s.size>0?s:undefined;return n;});
   const clearFilter  = (dim)   =>setFilters(f=>{const n={...f};delete n[dim];return n;});
   const clearAll     = ()      =>{setFilters({});setSearch("");setCodeSearch("");setMonthF("all");setLocF("all");};
   const toggleSort   = (col)   =>setSortCfg(s=>({col,dir:s.col===col&&s.dir==="asc"?"desc":"asc"}));
-  const activeFilterEntries = Object.entries(filters).filter(([,v])=>v);
+  const activeFilterEntries = Object.entries(filters).filter(([,v])=>v&&v.size>0);
   const hasAnyFilter = activeFilterEntries.length>0||search||codeSearch||monthF!=="all"||locF!=="all";
   const months = useMemo(()=>[...new Set(rows.map(r=>r.date.getMonth()))].sort(),[rows]);
 
   // ── Derived data ─────────────────────────────────────────────────────────────
   const filtered = useMemo(()=>{
     const arr=rows.filter(r=>{
-      if (filters.lecturer  && r.lecturer    !==filters.lecturer)   return false;
-      if (filters.class     && r.class       !==filters.class)      return false;
-      if (filters.program   && r.program     !==filters.program)    return false;
-      if (filters.course    && r.course      !==filters.course)     return false;
-      if (filters.courseCode&& r.courseCode  !==filters.courseCode) return false;
-      if (filters.sheet     && r.sourceSheet !==filters.sheet)      return false;
+      if (filters.lecturer  && !filters.lecturer.has(r.lecturer))   return false;
+      if (filters.class     && !filters.class.has(r.class))        return false;
+      if (filters.program   && !filters.program.has(r.program))    return false;
+      if (filters.course    && !filters.course.has(r.course))      return false;
+      if (filters.courseCode&& !filters.courseCode.has(r.courseCode)) return false;
+      if (filters.sheet     && !filters.sheet.has(r.sourceSheet))  return false;
       if (monthF!=="all"    && r.date.getMonth()!==+monthF)         return false;
       if (locF!=="all"      && r.location!==locF)                   return false;
       if (search){const q=search.toLowerCase();if(![r.lecturer,r.class,r.program,r.course,r.room].some(v=>v?.toLowerCase().includes(q)))return false;}
@@ -465,9 +465,9 @@ export default function ScheduleManager() {
 
   const filtClashes = useMemo(()=>clashes.filter(c=>{
     if (clashF!=="all"&&c.type!==clashF) return false;
-    if (filters.lecturer && c.lecturer!==filters.lecturer) return false;
-    if (filters.class    && !c.rows.some(r=>r?.class===filters.class))   return false;
-    if (filters.program  && !c.rows.some(r=>r?.program===filters.program)) return false;
+    if (filters.lecturer && !filters.lecturer.has(c.lecturer)) return false;
+    if (filters.class    && !c.rows.some(r=>r&&filters.class.has(r.class)))   return false;
+    if (filters.program  && !c.rows.some(r=>r&&filters.program.has(r.program))) return false;
     return true;
   }),[clashes,clashF,filters]);
 
@@ -543,9 +543,9 @@ export default function ScheduleManager() {
     const y=calDate.getFullYear(),m=calDate.getMonth(),byDay={},clashDays={};
     for (const r of rows){
       if (r.date.getFullYear()!==y||r.date.getMonth()!==m) continue;
-      if (filters.lecturer&&r.lecturer!==filters.lecturer) continue;
-      if (filters.class   &&r.class   !==filters.class)    continue;
-      if (filters.program &&r.program !==filters.program)  continue;
+      if (filters.lecturer&&!filters.lecturer.has(r.lecturer)) continue;
+      if (filters.class   &&!filters.class.has(r.class))     continue;
+      if (filters.program &&!filters.program.has(r.program)) continue;
       (byDay[r.date.getDate()]=byDay[r.date.getDate()]||[]).push(r);
     }
     for (const c of clashes){
@@ -632,13 +632,15 @@ export default function ScheduleManager() {
       {hasAnyFilter&&(
         <div style={{padding:"7px 20px",background:"var(--color-background-info)",borderBottom:"0.5px solid var(--color-border-info)",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
           <span style={{fontSize:11,color:"var(--color-text-secondary)",textTransform:"uppercase",letterSpacing:"0.05em",whiteSpace:"nowrap"}}>Filtered by</span>
-          {activeFilterEntries.map(([dim,val])=>(
-            <span key={dim} style={{display:"inline-flex",alignItems:"center",gap:5,background:"var(--color-background-primary)",border:"0.5px solid var(--color-border-secondary)",borderRadius:20,padding:"2px 8px 2px 10px",fontSize:12}}>
-              <span style={{color:"var(--color-text-secondary)",fontSize:10,textTransform:"uppercase"}}>{FILTER_LABELS[dim]}</span>
-              <span style={{color:"var(--color-text-primary)",fontWeight:500,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={val}>{val}</span>
-              <button onClick={()=>clearFilter(dim)} style={{background:"none",border:"none",cursor:"pointer",color:"var(--color-text-secondary)",padding:"0 2px",lineHeight:1,fontSize:14}}>×</button>
-            </span>
-          ))}
+          {activeFilterEntries.map(([dim,valSet])=>
+            [...valSet].map(val=>(
+              <span key={`${dim}-${val}`} style={{display:"inline-flex",alignItems:"center",gap:5,background:"var(--color-background-primary)",border:"0.5px solid var(--color-border-secondary)",borderRadius:20,padding:"2px 8px 2px 10px",fontSize:12}}>
+                <span style={{color:"var(--color-text-secondary)",fontSize:10,textTransform:"uppercase",letterSpacing:"0.05em"}}>{FILTER_LABELS[dim]}</span>
+                <span style={{color:"var(--color-text-primary)",fontWeight:500,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={val}>{val}</span>
+                <button onClick={()=>clearFilter(dim)} style={{background:"none",border:"none",cursor:"pointer",color:"var(--color-text-secondary)",padding:"0 2px",lineHeight:1,fontSize:14}}>×</button>
+              </span>
+            ))
+          )}
           {(search||codeSearch||monthF!=="all"||locF!=="all")&&<span style={{fontSize:12,color:"var(--color-text-secondary)"}}>+ search/date/location filters active</span>}
           <button onClick={clearAll} style={{marginLeft:"auto",...S.btn,fontSize:11,padding:"3px 10px"}}><X size={11}/> Clear all</button>
         </div>
@@ -718,17 +720,17 @@ export default function ScheduleManager() {
                         <tr key={r.id} style={{background:hasC?"#fff5f5":i%2===0?"var(--color-background-primary)":"var(--color-background-secondary)"}}>
                           {colsVisible.has("pertemuan") &&<td style={{...S.td,fontSize:12,color:"var(--color-text-secondary)",whiteSpace:"nowrap",fontVariantNumeric:"tabular-nums"}}>{r.pertemuan?<span><span style={{fontWeight:500,color:"var(--color-text-primary)"}}>{r.pertemuan}</span><span style={{opacity:0.5}}>/{r.totalPertemuan}</span></span>:"—"}</td>}
                           {colsVisible.has("lecturer")  &&<td style={{...S.td,fontWeight:500}}>{r.lecturer?<button style={S.link} onClick={()=>toggleFilter("lecturer",r.lecturer)}>{r.lecturer}{hasC&&" ⚠"}</button>:<span style={{color:"var(--color-text-danger)",fontSize:12}}>Unassigned</span>}</td>}
-                          {colsVisible.has("courseCode")&&<td style={{...S.td,fontFamily:"monospace",fontSize:12}}><button style={{...S.link,fontFamily:"monospace",fontSize:12,color:filters.courseCode===r.courseCode?"#1d4ed8":"var(--color-text-primary)"}} onClick={()=>toggleFilter("courseCode",r.courseCode)}>{r.courseCode}</button></td>}
-                          {colsVisible.has("class")     &&<td style={S.td}><button style={{...S.link,color:filters.class===r.class?"#1d4ed8":"var(--color-text-primary)"}} onClick={()=>toggleFilter("class",r.class)}>{r.class}</button></td>}
-                          {colsVisible.has("program")   &&<td style={S.td}><button style={{...S.link,color:filters.program===r.program?"#1d4ed8":"var(--color-text-primary)"}} onClick={()=>toggleFilter("program",r.program)}>{r.program||"—"}</button></td>}
-                          {colsVisible.has("course")    &&<td style={{...S.td,maxWidth:190,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={r.course}><button style={{...S.link,color:filters.course===r.course?"#1d4ed8":"var(--color-text-primary)",maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",display:"block"}} onClick={()=>toggleFilter("course",r.course)} title={r.course}>{r.course}</button></td>}
+                          {colsVisible.has("courseCode")&&<td style={{...S.td,fontFamily:"monospace",fontSize:12}}><button style={{...S.link,fontFamily:"monospace",fontSize:12,color:filters.courseCode?.has(r.courseCode)?"#1d4ed8":"var(--color-text-primary)"}} onClick={()=>toggleFilter("courseCode",r.courseCode)}>{r.courseCode}</button></td>}
+                          {colsVisible.has("class")     &&<td style={S.td}><button style={{...S.link,color:filters.class?.has(r.class)?"#1d4ed8":"var(--color-text-primary)"}} onClick={()=>toggleFilter("class",r.class)}>{r.class}</button></td>}
+                          {colsVisible.has("program")   &&<td style={S.td}><button style={{...S.link,color:filters.program?.has(r.program)?"#1d4ed8":"var(--color-text-primary)"}} onClick={()=>toggleFilter("program",r.program)}>{r.program||"—"}</button></td>}
+                          {colsVisible.has("course")    &&<td style={{...S.td,maxWidth:190,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={r.course}><button style={{...S.link,color:filters.course?.has(r.course)?"#1d4ed8":"var(--color-text-primary)",maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",display:"block"}} onClick={()=>toggleFilter("course",r.course)} title={r.course}>{r.course}</button></td>}
                           {colsVisible.has("date")      &&<td style={{...S.td,whiteSpace:"nowrap"}}>{fmtDate(r.date)}</td>}
                           {colsVisible.has("time")      &&<td style={{...S.td,whiteSpace:"nowrap",fontSize:12}}>{r.time||<span style={{color:"var(--color-text-secondary)"}}>—</span>}</td>}
                           {colsVisible.has("sesi")      &&<td style={{...S.td,fontSize:12,textAlign:"center",fontWeight:500}}>{r.sesiCount||"—"}</td>}
                           {colsVisible.has("room")      &&<td style={{...S.td,fontSize:12}}>{r.room||<span style={{color:"var(--color-border-secondary)"}}>—</span>}</td>}
                           {colsVisible.has("location")  &&<td style={S.td}><LocBadge loc={r.location}/></td>}
                           {colsVisible.has("sessionType")&&<td style={S.td}><Badge text={r.sessionType} bg={SESSION_STYLE[r.sessionType]?.bg} color={SESSION_STYLE[r.sessionType]?.text}/></td>}
-                          {colsVisible.has("source")    &&<td style={{...S.td,fontSize:11}}><button style={{...S.link,fontSize:11,color:filters.sheet===r.sourceSheet?"#1d4ed8":"var(--color-text-secondary)"}} onClick={()=>toggleFilter("sheet",r.sourceSheet)}>{r.sourceSheet}</button></td>}
+                          {colsVisible.has("source")    &&<td style={{...S.td,fontSize:11}}><button style={{...S.link,fontSize:11,color:filters.sheet?.has(r.sourceSheet)?"#1d4ed8":"var(--color-text-secondary)"}} onClick={()=>toggleFilter("sheet",r.sourceSheet)}>{r.sourceSheet}</button></td>}
                         </tr>
                       );
                     })}
@@ -764,7 +766,7 @@ export default function ScheduleManager() {
                           <span style={{fontSize:12,color:"var(--color-text-secondary)"}}>{c.type==="travel"?`${fmtDate(c.rows[0]?.date)} → ${fmtDate(c.rows[1]?.date)}`:fmtDate(c.date)}</span>
                         </div>
                         <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                          <button style={{...S.btn,fontSize:11}} onClick={()=>{setFilters({lecturer:c.lecturer});setView("mcp");}}>↗ Compare in MCP</button>
+                          <button style={{...S.btn,fontSize:11}} onClick={()=>{const lecs=new Set([c.lecturer,...c.rows.map(r=>r?.lecturer).filter(Boolean)]);setFilters({lecturer:lecs});setView("mcp");}}>↗ Compare clashing lecturers</button>
                           <button onClick={()=>setAcked(p=>({...p,[c.id]:!p[c.id]}))} style={isAcked?{...S.btnPrimary,fontSize:12}:{...S.btn,fontSize:12}}>{isAcked?<><Check size={12}/> Acknowledged</>:"Acknowledge"}</button>
                         </div>
                       </div>
