@@ -251,28 +251,56 @@ export default function ScheduleManager() {
   const [loading, setLoading] = useState(false);
   const [fileName, setFileName] = useState("");
 
+  // ── Shared XLSX processing ─────────────────────────────────────────────────
+  // Call this with an ArrayBuffer from either a file upload or a fetch().
+  const processBuffer = useCallback((buffer, name) => {
+    const wb = XLSX.read(new Uint8Array(buffer), { type:"array", cellDates:true });
+    const all = [];
+    for (const [sName,sType] of [["Regular","Regular"],["Executive","Executive"],["ENMARK","ENMARK"]]) {
+      if (wb.SheetNames.includes(sName)) {
+        const data = XLSX.utils.sheet_to_json(wb.Sheets[sName], { header:1, raw:true, cellDates:true, defval:null });
+        all.push(...processSheet(data, sType));
+      }
+    }
+    const distributed = redistributeTeamTeachingDates(all);
+    setRows(distributed); setClashes(detectClashes(distributed)); setWarnings(getWarnings(distributed));
+    setAcked({}); setNotes({}); setDismissed(new Set()); setFilters({}); setSearch(""); setMonthF("all"); setLocF("all"); setView("mcp");
+    setFileName(name);
+  }, []);
+
+  // ── Auto-load: fetch the bundled schedule on first mount ───────────────────
+  // Put your Excel file at:  public/schedule.xlsx  (CRA / Vite / Next.js)
+  // Change the path below if you name it differently.
+  const AUTO_LOAD_PATH = "/schedule.xlsx";
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(AUTO_LOAD_PATH)
+      .then(res => {
+        if (!res.ok) throw new Error(`${res.status} – file not found at ${AUTO_LOAD_PATH}`);
+        return res.arrayBuffer();
+      })
+      .then(buf => {
+        processBuffer(buf, AUTO_LOAD_PATH.split("/").pop());
+      })
+      .catch(err => {
+        console.warn("Auto-load skipped:", err.message);
+      })
+      .finally(() => setLoading(false));
+  }, [processBuffer]);
+
+  // ── Manual upload (overrides the auto-loaded file) ─────────────────────────
   const handleFile = useCallback(e => {
     const file = e.target.files[0]; if (!file) return;
-    setLoading(true); setFileName(file.name);
+    setLoading(true);
     const reader = new FileReader();
     reader.onload = evt => {
-      try {
-        const wb = XLSX.read(new Uint8Array(evt.target.result), { type:"array", cellDates:true });
-        const all = [];
-        for (const [sName,sType] of [["Regular","Regular"],["Executive","Executive"],["ENMARK","ENMARK"]]) {
-          if (wb.SheetNames.includes(sName)) {
-            const data = XLSX.utils.sheet_to_json(wb.Sheets[sName], { header:1, raw:true, cellDates:true, defval:null });
-            all.push(...processSheet(data, sType));
-          }
-        }
-        const distributed = redistributeTeamTeachingDates(all);
-        setRows(distributed); setClashes(detectClashes(distributed)); setWarnings(getWarnings(distributed));
-        setAcked({}); setNotes({}); setDismissed(new Set()); setFilters({}); setSearch(""); setMonthF("all"); setLocF("all"); setView("mcp");
-      } catch(err) { console.error(err); }
+      try { processBuffer(evt.target.result, file.name); }
+      catch(err) { console.error(err); }
       setLoading(false);
     };
     reader.readAsArrayBuffer(file); e.target.value="";
-  }, []);
+  }, [processBuffer]);
 
   const months = useMemo(() => [...new Set(rows.map(r=>r.date.getMonth()))].sort(), [rows]);
 
@@ -401,15 +429,26 @@ export default function ScheduleManager() {
         <div style={{ width:64, height:64, borderRadius:"var(--border-radius-lg)", background:"var(--color-background-secondary)", border:"0.5px solid var(--color-border-tertiary)", display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 20px" }}>
           <FileSpreadsheet size={28} color="var(--color-text-secondary)" />
         </div>
-        <h2 style={{ fontSize:22, fontWeight:500, margin:"0 0 8px", color:"var(--color-text-primary)" }}>Schedule Manager</h2>
-        <p style={{ fontSize:14, color:"var(--color-text-secondary)", lineHeight:1.6, margin:"0 0 28px" }}>
-          Upload your semester master Excel file to generate MCP output, detect clashes, and view lecturer statistics across Regular, Executive, and ENMARK sheets.
-        </p>
-        <label style={{ ...S.btnPrimary, padding:"10px 22px", fontSize:14, cursor:"pointer", borderRadius:"var(--border-radius-md)" }}>
-          <Upload size={16} /> Upload Excel File
-          <input type="file" accept=".xlsx,.xls" onChange={handleFile} style={{ display:"none" }} />
-        </label>
-        {loading && <p style={{ marginTop:14, fontSize:13, color:"var(--color-text-secondary)" }}>Processing…</p>}
+        {loading ? (
+          <>
+            <h2 style={{ fontSize:20, fontWeight:500, margin:"0 0 8px", color:"var(--color-text-primary)" }}>Loading schedule…</h2>
+            <p style={{ fontSize:13, color:"var(--color-text-secondary)", margin:0 }}>Fetching <code style={{fontSize:12}}>{AUTO_LOAD_PATH}</code></p>
+          </>
+        ) : (
+          <>
+            <h2 style={{ fontSize:22, fontWeight:500, margin:"0 0 8px", color:"var(--color-text-primary)" }}>Schedule Manager</h2>
+            <p style={{ fontSize:14, color:"var(--color-text-secondary)", lineHeight:1.6, margin:"0 0 6px" }}>
+              No schedule file found at <code style={{fontSize:12}}>{AUTO_LOAD_PATH}</code>.
+            </p>
+            <p style={{ fontSize:13, color:"var(--color-text-secondary)", lineHeight:1.6, margin:"0 0 28px" }}>
+              Place your Excel file there, or upload one manually below.
+            </p>
+            <label style={{ ...S.btnPrimary, padding:"10px 22px", fontSize:14, cursor:"pointer", borderRadius:"var(--border-radius-md)" }}>
+              <Upload size={16} /> Upload Excel File
+              <input type="file" accept=".xlsx,.xls" onChange={handleFile} style={{ display:"none" }} />
+            </label>
+          </>
+        )}
       </div>
     </div>
   );
