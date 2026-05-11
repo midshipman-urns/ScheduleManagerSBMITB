@@ -78,7 +78,9 @@ function normalizeXLDate(d) {
 
 function processSheet(rawRows, sheetType) {
   if (!rawRows||rawRows.length<2) return [];
-  const hdrs = rawRows[0]||[];
+  // For ENMARK: headers are in row 1 (row 0 has PERTEMUAN); for others: row 0
+  const headerRowIdx = sheetType === "ENMARK" ? 1 : 0;
+  const hdrs = rawRows[headerRowIdx]||[];
   const find  = (...names) => { for (const n of names){const i=hdrs.findIndex(h=>h&&String(h).toLowerCase().trim()===n.toLowerCase());if(i>=0)return i;} return -1; };
   const ci = {
     prodi:find("prodi"),  loc:find("location"),  kode:find("kode"),   nama:find("nama"),
@@ -87,26 +89,41 @@ function processSheet(rawRows, sheetType) {
   };
   const result=[], seen=new Set();
   
-  // For ENMARK: read sesiCount directly from column headers (e.g., "5", "MID EXAM" → 3, "FINAL EXAM" → 3)
-  const enmarkSesiMap = {};
-  if (sheetType === "ENMARK") {
-    for (let j = 0; j < hdrs.length; j++) {
-      const hdr = String(hdrs[j] || "").trim().toUpperCase();
-      if (hdr.includes("MID EXAM")) {
-        enmarkSesiMap[j] = 3; // Exam sesi
-      } else if (hdr.includes("FINAL EXAM")) {
-        enmarkSesiMap[j] = 3; // Exam sesi
-      } else if (/^\d+$/.test(hdr)) {
-        // Pure number: "5" → 5 sesi, "2" → 2 sesi
-        enmarkSesiMap[j] = parseInt(hdr) || 0;
+  // Extract sesi counts from header row for ENMARK and Executive
+  // Only extract sesi for columns that actually have date values (not metadata columns)
+  const sesiMap = {};
+  if ((sheetType === "ENMARK" || sheetType === "Executive") && hdrs.length > 0) {
+    // Find first data row to check which columns have dates
+    let firstDataRow = null;
+    for (let i = (sheetType === "ENMARK" ? 2 : 1); i < rawRows.length; i++) {
+      if (rawRows[i] && !rawRows[i].every(v => v == null || v === "")) {
+        firstDataRow = rawRows[i];
+        break;
+      }
+    }
+    // Extract sesi only from columns that have dates in the first data row
+    if (firstDataRow) {
+      for (let j = 0; j < hdrs.length; j++) {
+        const hdr = String(hdrs[j] || "").trim().toUpperCase();
+        const cellVal = firstDataRow[j];
+        // Only extract sesi if this column has a date value
+        if (isDate(normalizeXLDate(cellVal))) {
+          if (hdr.includes("MID EXAM")) {
+            sesiMap[j] = 3;
+          } else if (hdr.includes("FINAL EXAM")) {
+            sesiMap[j] = 3;
+          } else if (/^\d+$/.test(hdr)) {
+            sesiMap[j] = parseInt(hdr) || 0;
+          }
+        }
       }
     }
   }
   
   for (let i=1;i<rawRows.length;i++) {
     const row=rawRows[i];
-    // Skip SESI metadata row in ENMARK (row index 1)
-    if (sheetType === "ENMARK" && i === 1) continue;
+    // Skip header and SESI metadata rows in ENMARK (rows 0-1)
+    if (sheetType === "ENMARK" && i <= 1) continue;
     if (!row||row.every(v=>v==null||v==="")) continue;
     const kode = row[ci.kode]?String(row[ci.kode]).trim():"";
     if (!kode||kode==="MMXXXX") continue;
@@ -138,9 +155,9 @@ function processSheet(rawRows, sheetType) {
         const dedup = `${lecturer}|${shared.course}|${shared.class}|${dk(val)}|${time}`;
         if (seen.has(dedup)) continue;
         seen.add(dedup);
-        // Compute sesiCount: from Sesi column, or inferred from ENMARK header
+        // Compute sesiCount: from Sesi column, or inferred from Executive/ENMARK headers
         let sesiCount = baseSesi;
-        if (sheetType === "ENMARK" && enmarkSesiMap[j]) sesiCount = enmarkSesiMap[j];
+        if ((sheetType === "ENMARK" || sheetType === "Executive") && sesiMap[j] !== undefined) sesiCount = sesiMap[j];
         result.push({ id:`${sheetType}-${i}-${j}-${encodeURIComponent(lecturer)}`, lecturer, lecturerSKS, _rowIndex:i, hasLecturer:!!lecturer, ...shared, date:val, time, sessionType:getSessionType(hdrs[j]), hasRoom:!!shared.room, sesiCount });
       }
     }
@@ -259,26 +276,22 @@ function addPertemuanNumbers(rows) {
 }
 
 // Validate total sesi (not pertemuan count). Expected: totalSKS × 16 sesi
-// For ENMARK: use header sesi counts; for others: sum from rows
-function validateSKSCounts(rows, enmarkSesiMap) {
+function validateSKSCounts(rows) {
   const groups={};
   for (const r of rows){
     const key=`${r.course}||${r.class}`;
-    if (!groups[key]) groups[key]={course:r.course,class:r.class,lecturers:new Map(),courseSKS:r.courseSKS||0,totalSesi:0,sheet:r.sourceSheet};
+    if (!groups[key]) groups[key]={course:r.course,class:r.class,lecturers:new Map(),courseSKS:r.courseSKS||0,totalSesi:0,sheet:r.sourceSheet,dates:new Set()};
     if (r.lecturer&&r.lecturerSKS) groups[key].lecturers.set(r.lecturer,r.lecturerSKS);
-    // For ENMARK, we'll compute sesi from headers separately
-    if (r.sourceSheet !== "ENMARK") {
-      groups[key].totalSesi += (r.sesiCount||0); // Sum sesi from rows
-    }
-  }
-  
-  // For ENMARK: compute total sesi from header map (do this once per unique course+class)
-  if (enmarkSesiMap && Object.keys(enmarkSesiMap).length > 0) {
-    const headerTotal = Object.values(enmarkSesiMap).reduce((a,b)=>a+b, 0);
-    for (const g of Object.values(groups)) {
-      if (g.sheet === "ENMARK") {
-        g.totalSesi = headerTotal; // All ENMARK courses have same header structure
+    // For ENMARK/Executive: count unique dates only (multiple lecturers can teach same session)
+    // For others: just sum
+    if (r.sourceSheet === "ENMARK" || r.sourceSheet === "Executive") {
+      const dateKey = dk(r.date);
+      if (!groups[key].dates.has(dateKey)) {
+        groups[key].dates.add(dateKey);
+        groups[key].totalSesi += (r.sesiCount||0);
       }
+    } else {
+      groups[key].totalSesi += (r.sesiCount||0);
     }
   }
   
@@ -384,31 +397,14 @@ export default function ScheduleManager() {
   const processBuffer = useCallback((buffer, name)=>{
     const wb = XLSX.read(new Uint8Array(buffer),{type:"array",cellDates:true});
     const all=[];
-    let enmarkHeaderMap = null;
     for (const [sName,sType] of [["Regular","Regular"],["Executive","Executive"],["ENMARK","ENMARK"]])
       if (wb.SheetNames.includes(sName)){
         const data=XLSX.utils.sheet_to_json(wb.Sheets[sName],{header:1,raw:true,cellDates:true,defval:null});
-        // For ENMARK: read sesi counts from the SESI row (row index 1, after PERTEMUAN header at index 0)
-        if (sType === "ENMARK" && data.length > 1) {
-          const sesiRow = data[1] || [];
-          enmarkHeaderMap = {};
-          for (let j = 0; j < sesiRow.length; j++) {
-            const val = sesiRow[j];
-            const valStr = String(val || "").trim().toUpperCase();
-            if (valStr.includes("MID EXAM")) {
-              enmarkHeaderMap[j] = 3;
-            } else if (valStr.includes("FINAL EXAM")) {
-              enmarkHeaderMap[j] = 3;
-            } else if (/^\d+$/.test(valStr)) {
-              enmarkHeaderMap[j] = parseInt(valStr) || 0;
-            }
-          }
-        }
         all.push(...processSheet(data,sType));
       }
     const distributed   = redistributeTeamTeachingDates(all);
     const withPertemuan = addPertemuanNumbers(distributed);
-    const sksWarns      = validateSKSCounts(withPertemuan, enmarkHeaderMap);
+    const sksWarns      = validateSKSCounts(withPertemuan);
     setRows(withPertemuan); setClashes(detectClashes(withPertemuan));
     setWarnings([...getWarnings(withPertemuan),...sksWarns]);
     setAcked({}); setNotes({}); setDismissed(new Set()); setFilters({}); setSearch(""); setCodeSearch(""); setMonthF("all"); setLocF("all"); setView("mcp");
