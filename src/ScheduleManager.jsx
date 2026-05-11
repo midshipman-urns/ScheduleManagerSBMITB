@@ -355,7 +355,8 @@ export default function ScheduleManager() {
   const [notes,      setNotes]      = useState({});
   const [dismissed,  setDismissed]  = useState(new Set());
   const [view,       setView]       = useState("mcp");
-  const [filters,    setFilters]    = useState({});
+  const [filters,    setFilters]    = useState({}); // {lecturer: Set([...]), ...}
+  const [openFilter, setOpenFilter] = useState(null); // which dropdown is open
   const [sortCfg,    setSortCfg]    = useState({col:"date",dir:"asc"});
   const [statsTab,   setStatsTab]   = useState("lecturer");
   const [search,     setSearch]     = useState("");
@@ -431,20 +432,19 @@ export default function ScheduleManager() {
     reader.readAsArrayBuffer(file); e.target.value="";
   },[processBuffer]);
 
-  // Filter helpers - now support multiple selections: {lecturer: Set([...]), class: Set([...]), ...}
-  const toggleFilter = (dim,val)=>setFilters(f=>{
-    const n = {...f};
-    const currentSet = n[dim] ? new Set(n[dim]) : new Set();
-    if (currentSet.has(val)) {
-      currentSet.delete(val);
-    } else {
-      currentSet.add(val);
-    }
-    n[dim] = currentSet.size > 0 ? currentSet : undefined;
-    return n;
-  });
+  // Multi-select filter helpers
+  const toggleFilterValue = (dim, val) => {
+    setFilters(f => {
+      const n = {...f};
+      if (!n[dim]) n[dim] = new Set();
+      const s = new Set(n[dim]);
+      s.has(val) ? s.delete(val) : s.add(val);
+      n[dim] = s.size > 0 ? s : undefined;
+      return n;
+    });
+  };
   const clearFilter  = (dim)   =>setFilters(f=>{const n={...f};delete n[dim];return n;});
-  const clearAll     = ()      =>{setFilters({});setSearch("");setCodeSearch("");setMonthF("all");setLocF("all");};
+  const clearAll     = ()      =>{setFilters({});setSearch("");setCodeSearch("");setMonthF("all");setLocF("all");setOpenFilter(null);};
   const toggleSort   = (col)   =>setSortCfg(s=>({col,dir:s.col===col&&s.dir==="asc"?"desc":"asc"}));
   const activeFilterEntries = Object.entries(filters).filter(([,v])=>v&&v.size>0);
   const hasAnyFilter = activeFilterEntries.length>0||search||codeSearch||monthF!=="all"||locF!=="all";
@@ -647,7 +647,7 @@ export default function ScheduleManager() {
               <span key={`${dim}-${val}`} style={{display:"inline-flex",alignItems:"center",gap:5,background:"var(--color-background-primary)",border:"0.5px solid var(--color-border-secondary)",borderRadius:20,padding:"2px 8px 2px 10px",fontSize:12}}>
                 <span style={{color:"var(--color-text-secondary)",fontSize:10,textTransform:"uppercase",letterSpacing:"0.05em"}}>{FILTER_LABELS[dim]}</span>
                 <span style={{color:"var(--color-text-primary)",fontWeight:500,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={val}>{val}</span>
-                <button onClick={()=>clearFilter(dim)} style={{background:"none",border:"none",cursor:"pointer",color:"var(--color-text-secondary)",padding:"0 2px",lineHeight:1,fontSize:14}}>×</button>
+                <button onClick={()=>toggleFilterValue(dim,val)} style={{background:"none",border:"none",cursor:"pointer",color:"var(--color-text-secondary)",padding:"0 2px",lineHeight:1,fontSize:14}}>×</button>
               </span>
             ))
           )}
@@ -692,6 +692,45 @@ export default function ScheduleManager() {
                 <option value="Jakarta">Jakarta</option>
                 <option value="Bandung">Bandung</option>
               </select>
+              
+              {/* Excel-style filter dropdowns */}
+              <div style={{display:"flex",gap:4}}>
+                {["lecturer","class","program","course"].map(dim=>{
+                  // Get all rows that match currently active filters (except the current dimension)
+                  const filteredRows = rows.filter(r=>{
+                    if (filters.lecturer  && dim!=="lecturer" && !filters.lecturer.has(r.lecturer))   return false;
+                    if (filters.class     && dim!=="class"     && !filters.class.has(r.class))        return false;
+                    if (filters.program   && dim!=="program"   && !filters.program.has(r.program))    return false;
+                    if (filters.course    && dim!=="course"    && !filters.course.has(r.course))      return false;
+                    return true;
+                  });
+                  // Get unique values for this dimension from filtered rows
+                  const vals = [...new Set(filteredRows.map(r=>r[dim]).filter(Boolean))].sort();
+                  const selected = filters[dim]?.size||0;
+                  return (
+                    <div key={dim} style={{position:"relative"}}>
+                      <button style={{...S.btn,fontSize:12,padding:"6px 10px",background:selected>0?"#dbeafe":"var(--color-background-primary)",color:selected>0?"#1e40af":"var(--color-text-secondary)",border:selected>0?"0.5px solid #93c5fd":"0.5px solid var(--color-border-secondary)"}} onClick={()=>setOpenFilter(openFilter===dim?null:dim)}>
+                        {FILTER_LABELS[dim]} {selected>0?`(${selected})`:""}
+                      </button>
+                      {openFilter===dim&&(
+                        <div style={{position:"absolute",top:"100%",left:0,marginTop:4,background:"var(--color-background-secondary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-md)",boxShadow:"0 4px 12px rgba(0,0,0,0.15)",zIndex:999,minWidth:220,maxHeight:320,overflowY:"auto"}}>
+                          <div style={{padding:"8px"}}>
+                            <button onClick={()=>{clearFilter(dim);}} style={{width:"100%",textAlign:"left",...S.btn,fontSize:11,marginBottom:4,padding:"4px 8px"}}>Clear all</button>
+                            {vals.slice(0,100).map(v=>(
+                              <div key={v} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 8px",cursor:"pointer",borderRadius:4,background:filters[dim]?.has(v)?"var(--color-background-primary)":"transparent",fontSize:12}} onClick={()=>toggleFilterValue(dim,v)}>
+                                <input type="checkbox" checked={filters[dim]?.has(v)||false} onChange={()=>{}} style={{cursor:"pointer"}}/>
+                                <span>{v||"(empty)"}</span>
+                              </div>
+                            ))}
+                            {vals.length>100&&<div style={{padding:"4px 8px",fontSize:11,color:"var(--color-text-secondary)",fontStyle:"italic"}}>+{vals.length-100} more</div>}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              
               {hasAnyFilter&&<button style={S.btn} onClick={clearAll}><X size={13}/> Clear all</button>}
               <button style={S.btn} onClick={()=>setShowColPicker(p=>!p)}><Eye size={14}/> Columns</button>
               <div style={{marginLeft:"auto"}}><button style={S.btnPrimary} onClick={exportMCP}><Download size={14}/> Export MCP</button></div>
@@ -729,18 +768,18 @@ export default function ScheduleManager() {
                       return (
                         <tr key={r.id} style={{background:hasC?"#fff5f5":i%2===0?"var(--color-background-primary)":"var(--color-background-secondary)"}}>
                           {colsVisible.has("pertemuan") &&<td style={{...S.td,fontSize:12,color:"var(--color-text-secondary)",whiteSpace:"nowrap",fontVariantNumeric:"tabular-nums"}}>{r.pertemuan?<span><span style={{fontWeight:500,color:"var(--color-text-primary)"}}>{r.pertemuan}</span><span style={{opacity:0.5}}>/{r.totalPertemuan}</span></span>:"—"}</td>}
-                          {colsVisible.has("lecturer")  &&<td style={{...S.td,fontWeight:500}}>{r.lecturer?<button style={S.link} onClick={()=>toggleFilter("lecturer",r.lecturer)}>{r.lecturer}{hasC&&" ⚠"}</button>:<span style={{color:"var(--color-text-danger)",fontSize:12}}>Unassigned</span>}</td>}
-                          {colsVisible.has("courseCode")&&<td style={{...S.td,fontFamily:"monospace",fontSize:12}}><button style={{...S.link,fontFamily:"monospace",fontSize:12,color:filters.courseCode?.has(r.courseCode)?"#1d4ed8":"var(--color-text-primary)"}} onClick={()=>toggleFilter("courseCode",r.courseCode)}>{r.courseCode}</button></td>}
-                          {colsVisible.has("class")     &&<td style={S.td}><button style={{...S.link,color:filters.class?.has(r.class)?"#1d4ed8":"var(--color-text-primary)"}} onClick={()=>toggleFilter("class",r.class)}>{r.class}</button></td>}
-                          {colsVisible.has("program")   &&<td style={S.td}><button style={{...S.link,color:filters.program?.has(r.program)?"#1d4ed8":"var(--color-text-primary)"}} onClick={()=>toggleFilter("program",r.program)}>{r.program||"—"}</button></td>}
-                          {colsVisible.has("course")    &&<td style={{...S.td,maxWidth:190,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={r.course}><button style={{...S.link,color:filters.course?.has(r.course)?"#1d4ed8":"var(--color-text-primary)",maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",display:"block"}} onClick={()=>toggleFilter("course",r.course)} title={r.course}>{r.course}</button></td>}
+                          {colsVisible.has("lecturer")  &&<td style={{...S.td,fontWeight:500}}>{r.lecturer?<button style={{...S.link,color:filters.lecturer?.has(r.lecturer)?"#1d4ed8":"var(--color-text-primary)"}} onClick={()=>toggleFilterValue("lecturer",r.lecturer)}>{r.lecturer}{hasC&&" ⚠"}</button>:<span style={{color:"var(--color-text-danger)",fontSize:12}}>Unassigned</span>}</td>}
+                          {colsVisible.has("courseCode")&&<td style={{...S.td,fontFamily:"monospace",fontSize:12}}><button style={{...S.link,fontFamily:"monospace",fontSize:12,color:filters.courseCode?.has(r.courseCode)?"#1d4ed8":"var(--color-text-primary)"}} onClick={()=>toggleFilterValue("courseCode",r.courseCode)}>{r.courseCode}</button></td>}
+                          {colsVisible.has("class")     &&<td style={S.td}><button style={{...S.link,color:filters.class?.has(r.class)?"#1d4ed8":"var(--color-text-primary)"}} onClick={()=>toggleFilterValue("class",r.class)}>{r.class}</button></td>}
+                          {colsVisible.has("program")   &&<td style={S.td}><button style={{...S.link,color:filters.program?.has(r.program)?"#1d4ed8":"var(--color-text-primary)"}} onClick={()=>toggleFilterValue("program",r.program)}>{r.program||"—"}</button></td>}
+                          {colsVisible.has("course")    &&<td style={{...S.td,maxWidth:190,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={r.course}><button style={{...S.link,color:filters.course?.has(r.course)?"#1d4ed8":"var(--color-text-primary)",maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",display:"block"}} onClick={()=>toggleFilterValue("course",r.course)} title={r.course}>{r.course}</button></td>}
                           {colsVisible.has("date")      &&<td style={{...S.td,whiteSpace:"nowrap"}}>{fmtDate(r.date)}</td>}
                           {colsVisible.has("time")      &&<td style={{...S.td,whiteSpace:"nowrap",fontSize:12}}>{r.time||<span style={{color:"var(--color-text-secondary)"}}>—</span>}</td>}
                           {colsVisible.has("sesi")      &&<td style={{...S.td,fontSize:12,textAlign:"center",fontWeight:500}}>{r.sesiCount||"—"}</td>}
                           {colsVisible.has("room")      &&<td style={{...S.td,fontSize:12}}>{r.room||<span style={{color:"var(--color-border-secondary)"}}>—</span>}</td>}
                           {colsVisible.has("location")  &&<td style={S.td}><LocBadge loc={r.location}/></td>}
                           {colsVisible.has("sessionType")&&<td style={S.td}><Badge text={r.sessionType} bg={SESSION_STYLE[r.sessionType]?.bg} color={SESSION_STYLE[r.sessionType]?.text}/></td>}
-                          {colsVisible.has("source")    &&<td style={{...S.td,fontSize:11}}><button style={{...S.link,fontSize:11,color:filters.sheet?.has(r.sourceSheet)?"#1d4ed8":"var(--color-text-secondary)"}} onClick={()=>toggleFilter("sheet",r.sourceSheet)}>{r.sourceSheet}</button></td>}
+                          {colsVisible.has("source")    &&<td style={{...S.td,fontSize:11}}><button style={{...S.link,fontSize:11,color:filters.sheet?.has(r.sourceSheet)?"#1d4ed8":"var(--color-text-secondary)"}} onClick={()=>toggleFilterValue("sheet",r.sourceSheet)}>{r.sourceSheet}</button></td>}
                         </tr>
                       );
                     })}
@@ -772,11 +811,11 @@ export default function ScheduleManager() {
                       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,flexWrap:"wrap"}}>
                         <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
                           <Badge text={cfg.label} bg={cfg.bg} color={cfg.text}/>
-                          <button style={{...S.link,fontWeight:500,fontSize:14}} onClick={()=>toggleFilter("lecturer",c.lecturer)}>{c.lecturer}</button>
+                          <button style={{...S.link,fontWeight:500,fontSize:14}} onClick={()=>toggleFilterValue("lecturer",c.lecturer)}>{c.lecturer}</button>
                           <span style={{fontSize:12,color:"var(--color-text-secondary)"}}>{c.type==="travel"?`${fmtDate(c.rows[0]?.date)} → ${fmtDate(c.rows[1]?.date)}`:fmtDate(c.date)}</span>
                         </div>
                         <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                          <button style={{...S.btn,fontSize:11}} onClick={()=>{const lecs=new Set([c.lecturer,...c.rows.map(r=>r?.lecturer).filter(Boolean)]);setFilters({lecturer:lecs});setView("mcp");}}>↗ Compare clashing lecturers</button>
+                          <button style={{...S.btn,fontSize:11}} onClick={()=>{const lecs=new Set([c.lecturer,...c.rows.map(r=>r?.lecturer).filter(Boolean)]);setFilters({lecturer:lecs});setView("mcp");setOpenFilter(null);}}>↗ Compare clashing lecturers</button>
                           <button onClick={()=>setAcked(p=>({...p,[c.id]:!p[c.id]}))} style={isAcked?{...S.btnPrimary,fontSize:12}:{...S.btn,fontSize:12}}>{isAcked?<><Check size={12}/> Acknowledged</>:"Acknowledge"}</button>
                         </div>
                       </div>
@@ -787,7 +826,7 @@ export default function ScheduleManager() {
                             <div style={{color:"var(--color-text-secondary)",display:"flex",gap:6,alignItems:"center"}}><MapPin size={11}/> <LocBadge loc={r.location}/></div>
                             <div style={{color:"var(--color-text-secondary)"}}>Time: {r.time||"—"}</div>
                             <div style={{color:"var(--color-text-secondary)"}}>Room: {r.room||"—"}</div>
-                            <div style={{color:"var(--color-text-secondary)"}}>Class: <button style={{...S.link,fontSize:12}} onClick={()=>toggleFilter("class",r.class)}>{r.class}</button></div>
+                            <div style={{color:"var(--color-text-secondary)"}}>Class: <button style={{...S.link,fontSize:12}} onClick={()=>toggleFilterValue("class",r.class)}>{r.class}</button></div>
                             {c.type==="travel"&&<div style={{color:"var(--color-text-secondary)"}}>Date: {fmtDate(r.date)}</div>}
                             {/* View full course: replace filters with course+class to see all team-teaching members */}
                             <button style={{...S.link,fontSize:11,marginTop:4,color:"#7c3aed"}} onClick={()=>{setFilters({course:r.course,class:r.class});setView("mcp");}}>↗ View full course</button>
@@ -834,7 +873,7 @@ export default function ScheduleManager() {
                   return (
                     <div key={day} style={{background:bg,borderRadius:"var(--border-radius-md)",padding:"7px 6px",minHeight:76,border:hasClash?"1.5px solid #ef4444":"0.5px solid var(--color-border-tertiary)",position:"relative"}}>
                       <div style={{fontWeight:500,fontSize:13,marginBottom:4}}>{day}</div>
-                      {lecs.slice(0,3).map((l,li)=>{const loc=dr.find(r=>r.lecturer===l)?.location;return <div key={li} onClick={()=>toggleFilter("lecturer",l)} style={{fontSize:9,background:loc==="Jakarta"?"#bfdbfe":"#bbf7d0",borderRadius:3,padding:"1px 4px",marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",cursor:"pointer"}}>{l}</div>;})}
+                      {lecs.slice(0,3).map((l,li)=>{const loc=dr.find(r=>r.lecturer===l)?.location;return <div key={li} onClick={()=>toggleFilterValue("lecturer",l)} style={{fontSize:9,background:loc==="Jakarta"?"#bfdbfe":"#bbf7d0",borderRadius:3,padding:"1px 4px",marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",cursor:"pointer"}}>{l}</div>;})}
                       {lecs.length>3&&<div style={{fontSize:9,color:"var(--color-text-secondary)"}}>+{lecs.length-3} more</div>}
                       {hasClash&&<div style={{position:"absolute",top:5,right:5,width:7,height:7,borderRadius:"50%",background:"#ef4444"}}/>}
                     </div>
@@ -866,14 +905,14 @@ export default function ScheduleManager() {
                       const lecList=[...c.lecturers.keys()];
                       return (
                         <tr key={`${c.courseCode}-${c.class}`} style={{background:i%2===0?"var(--color-background-primary)":"var(--color-background-secondary)",borderBottom:"0.5px solid var(--color-border-tertiary)"}}>
-                          <td style={{...S.td,fontFamily:"monospace",fontSize:12,fontWeight:600}}><button style={{...S.link,fontFamily:"monospace",fontSize:12}} onClick={()=>{setFilters({courseCode:c.courseCode});setView("mcp");}}>{c.courseCode}</button></td>
-                          <td style={{...S.td,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={c.courseName}><button style={{...S.link,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",display:"block"}} onClick={()=>{setFilters({courseCode:c.courseCode,class:c.class});setView("mcp");}} title={c.courseName}>{c.courseName}</button></td>
-                          <td style={S.td}><button style={S.link} onClick={()=>{setFilters({class:c.class});setView("mcp");}}>{c.class}</button></td>
+                          <td style={{...S.td,fontFamily:"monospace",fontSize:12,fontWeight:600}}><button style={{...S.link,fontFamily:"monospace",fontSize:12}} onClick={()=>{toggleFilterValue("courseCode",c.courseCode);setView("mcp");}}>{c.courseCode}</button></td>
+                          <td style={{...S.td,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={c.courseName}><button style={{...S.link,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",display:"block"}} onClick={()=>{toggleFilterValue("courseCode",c.courseCode);toggleFilterValue("class",c.class);setView("mcp");}} title={c.courseName}>{c.courseName}</button></td>
+                          <td style={S.td}><button style={S.link} onClick={()=>{toggleFilterValue("class",c.class);setView("mcp");}}>{c.class}</button></td>
                           <td style={{...S.td,fontSize:12,color:"var(--color-text-secondary)"}}>{c.program||"—"}</td>
                           <td style={{...S.td,fontWeight:500,textAlign:"center"}}>{totalSKS||"—"}</td>
                           <td style={{...S.td,fontSize:12}}>
                             <div style={{display:"flex",flexDirection:"column",gap:2}}>
-                              {lecList.map(l=><button key={l} style={{...S.link,fontSize:12,textAlign:"left"}} onClick={()=>toggleFilter("lecturer",l)}>{l} <span style={{color:"var(--color-text-secondary)",fontWeight:400}}>({c.lecturers.get(l)} SKS)</span></button>)}
+                              {lecList.map(l=><button key={l} style={{...S.link,fontSize:12,textAlign:"left"}} onClick={()=>toggleFilterValue("lecturer",l)}>{l} <span style={{color:"var(--color-text-secondary)",fontWeight:400}}>({c.lecturers.get(l)} SKS)</span></button>)}
                             </div>
                           </td>
                           <td style={{...S.td,fontSize:12,color:"var(--color-text-secondary)"}}>{c.hari||"—"}</td>
@@ -916,7 +955,7 @@ export default function ScheduleManager() {
                     return (
                       <div key={lec} style={{...S.card}}>
                         <div style={{padding:"12px 16px",borderBottom:"0.5px solid var(--color-border-tertiary)",display:"flex",alignItems:"center",gap:10}}>
-                          <button style={{...S.link,fontWeight:600,fontSize:14}} onClick={()=>{setWeeklyLec(lec);toggleFilter("lecturer",lec);}}>{lec}</button>
+                          <button style={{...S.link,fontWeight:600,fontSize:14}} onClick={()=>{setWeeklyLec(lec);toggleFilterValue("lecturer",lec);}}>{lec}</button>
                           {lecClashes.length>0&&<button style={{...S.link,fontSize:12,color:"#ef4444"}} onClick={()=>{setFilters({lecturer:lec});setView("clashes");}}>⚠ {lecClashes.length} clash{lecClashes.length>1?"es":""}</button>}
                         </div>
                         <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:0}}>
@@ -969,7 +1008,7 @@ export default function ScheduleManager() {
                       const lc=clashes.filter(c=>c.lecturer===s.name&&!acked[c.id]);
                       return (
                         <tr key={s.name} style={{background:i%2===0?"var(--color-background-primary)":"var(--color-background-secondary)",borderBottom:"0.5px solid var(--color-border-tertiary)"}}>
-                          <td style={{...S.td,fontWeight:500}}><button style={S.link} onClick={()=>{toggleFilter("lecturer",s.name);setView("mcp");}}>{s.name}</button></td>
+                          <td style={{...S.td,fontWeight:500}}><button style={S.link} onClick={()=>{toggleFilterValue("lecturer",s.name);setView("mcp");}}>{s.name}</button></td>
                           <td style={{...S.td,fontWeight:500}}>{s.total}</td>
                           <td style={S.td}>{s.sessions}</td>
                           <td style={S.td}>{s.mid||<span style={{color:"var(--color-text-secondary)"}}>—</span>}</td>
@@ -978,7 +1017,7 @@ export default function ScheduleManager() {
                           <td style={S.td}>{s.bandung?<Badge text={s.bandung} bg="#dcfce7" color="#166534"/>:<span style={{color:"var(--color-border-secondary)"}}>—</span>}</td>
                           <td style={{...S.td,fontSize:12,color:"var(--color-text-secondary)"}}>{[...s.programs].join(", ")||"—"}</td>
                           <td style={{...S.td,fontSize:11,color:"var(--color-text-secondary)",maxWidth:130,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={[...s.classes].join(", ")}>{[...s.classes].join(", ")}</td>
-                          <td style={S.td}>{lc.length>0?<button style={{...S.link,color:"var(--color-text-danger)",fontWeight:500}} onClick={()=>{toggleFilter("lecturer",s.name);setView("clashes");}}>⚠ {lc.length}</button>:<span style={{color:"var(--color-text-success)",fontWeight:500}}><Check size={13}/></span>}</td>
+                          <td style={S.td}>{lc.length>0?<button style={{...S.link,color:"var(--color-text-danger)",fontWeight:500}} onClick={()=>{toggleFilterValue("lecturer",s.name);setView("clashes");}}>⚠ {lc.length}</button>:<span style={{color:"var(--color-text-success)",fontWeight:500}}><Check size={13}/></span>}</td>
                         </tr>
                       );
                     })}
@@ -993,7 +1032,7 @@ export default function ScheduleManager() {
                   <tbody>
                     {classStats.filter(s=>!search||s.name.toLowerCase().includes(search.toLowerCase())).map((s,i)=>(
                       <tr key={s.name} style={{background:i%2===0?"var(--color-background-primary)":"var(--color-background-secondary)",borderBottom:"0.5px solid var(--color-border-tertiary)"}}>
-                        <td style={{...S.td,fontWeight:500}}><button style={S.link} onClick={()=>{toggleFilter("class",s.name);setView("mcp");}}>{s.name}</button></td>
+                        <td style={{...S.td,fontWeight:500}}><button style={S.link} onClick={()=>{toggleFilterValue("class",s.name);setView("mcp");}}>{s.name}</button></td>
                         <td style={{...S.td,fontWeight:500}}>{s.total}</td>
                         <td style={{...S.td,fontSize:12,color:"var(--color-text-secondary)"}}>{[...s.lecturers].length} — <span style={{fontSize:11}}>{[...s.lecturers].join(", ")}</span></td>
                         <td style={{...S.td,fontSize:12,color:"var(--color-text-secondary)"}}>{[...s.programs].join(", ")||"—"}</td>
@@ -1012,7 +1051,7 @@ export default function ScheduleManager() {
                   <tbody>
                     {programStats.filter(s=>!search||s.name.toLowerCase().includes(search.toLowerCase())).map((s,i)=>(
                       <tr key={s.name} style={{background:i%2===0?"var(--color-background-primary)":"var(--color-background-secondary)",borderBottom:"0.5px solid var(--color-border-tertiary)"}}>
-                        <td style={{...S.td,fontWeight:500}}><button style={S.link} onClick={()=>{toggleFilter("program",s.name);setView("mcp");}}>{s.name}</button></td>
+                        <td style={{...S.td,fontWeight:500}}><button style={S.link} onClick={()=>{toggleFilterValue("program",s.name);setView("mcp");}}>{s.name}</button></td>
                         <td style={{...S.td,fontWeight:500}}>{s.total}</td>
                         <td style={{...S.td,fontSize:12,color:"var(--color-text-secondary)"}}>{[...s.lecturers].length} lecturers</td>
                         <td style={{...S.td,fontSize:12,color:"var(--color-text-secondary)"}}>{[...s.classes].join(", ")||"—"}</td>
