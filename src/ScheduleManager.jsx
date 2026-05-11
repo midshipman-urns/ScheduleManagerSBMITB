@@ -21,10 +21,10 @@ const FILTER_LABELS = { lecturer:"Lecturer", class:"Class", program:"Program", c
 const ALL_COLS = [
   {id:"pertemuan",label:"Pertemuan"}, {id:"lecturer",label:"Lecturer"}, {id:"courseCode",label:"Code"},
   {id:"class",label:"Class"},         {id:"program",label:"Program"},    {id:"course",label:"Course Name"},
-  {id:"date",label:"Date"},           {id:"time",label:"Time"},          {id:"room",label:"Room"},
-  {id:"location",label:"Location"},   {id:"sessionType",label:"Type"},   {id:"source",label:"Source"},
+  {id:"date",label:"Date"},           {id:"time",label:"Time"},          {id:"sesi",label:"Sesi"},
+  {id:"room",label:"Room"},           {id:"location",label:"Location"},   {id:"sessionType",label:"Type"},   {id:"source",label:"Source"},
 ];
-const DEFAULT_COLS = new Set(["pertemuan","lecturer","courseCode","class","program","course","date","time","room","location","sessionType"]);
+const DEFAULT_COLS = new Set(["pertemuan","lecturer","courseCode","class","program","course","date","time","sesi","room","location","sessionType"]);
 
 // ── Pure helpers ───────────────────────────────────────────────────────────────
 function extractLecturers(raw) {
@@ -42,14 +42,15 @@ function getTimeForDate(jam, hari, date, sheetType, statusSesi, occIdx) {
   const j = jam ? String(jam).trim() : "";
   if (sheetType === "Executive") {
     if (j.includes(",")) { const p=j.split(",").map(x=>x.trim()); return date.getDay()===6?p[0]:(p[1]||p[0]); }
-    return j;
+    // Fall through to general dan handler if no comma but has dan
+    if (!/\bdan\b/i.test(j)) return j;
   }
   if (/\bdan\b/i.test(j)) {
     const times = j.split(/\s+dan\s+/i).map(t=>t.trim());
     // Full Day: same date appears twice → use occurrence index (0=morning, 1=afternoon)
     if (/full\s*day/i.test(String(statusSesi||""))) return times[occIdx||0] || times[0];
-    // Twice-a-week: pick by day-of-week
-    const days = (hari||"").replace(/\s*\([^)]*\)/g,"").split(/[,\s\/]+/).map(d=>d.trim()).filter(d=>d in DAYS_ID);
+    // Twice-a-week: pick by day-of-week. Split on spaces, commas, slashes, AND hyphens
+    const days = (hari||"").replace(/\s*\([^)]*\)/g,"").split(/[,\s\/\-–—]+/).map(d=>d.trim()).filter(d=>d in DAYS_ID);
     const idx  = days.findIndex(d=>DAYS_ID[d]===date.getDay());
     if (idx>=0 && times[idx]) return times[idx];
   }
@@ -66,8 +67,11 @@ function parseTimeRange(s) {
 function timesOverlap(a,b) { const r1=parseTimeRange(a),r2=parseTimeRange(b); return !!(r1&&r2&&r1.start<r2.end&&r2.start<r1.end); }
 function getSessionType(h) { const s=String(h).toLowerCase(); return s.includes("mid")?"Mid Exam":s.includes("final")?"Final Exam":"Session"; }
 function fmtDate(d) { return d instanceof Date?d.toLocaleDateString("id-ID",{weekday:"short",day:"numeric",month:"short",year:"numeric"}):""; }
-function dk(d)      { return d instanceof Date?d.toISOString().split("T")[0]:""; }
+// dk() uses local date components to avoid timezone issues with UTC-based toISOString()
+function dk(d)      { if (!(d instanceof Date)||isNaN(d)) return ""; return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
 function isDate(v)  { return v instanceof Date&&!isNaN(v); }
+// Normalize SheetJS dates to local noon to eliminate midnight boundary timezone ambiguity
+function normalizeXLDate(d) { return d instanceof Date ? new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0) : d; }
 
 function processSheet(rawRows, sheetType) {
   if (!rawRows||rawRows.length<2) return [];
@@ -76,7 +80,7 @@ function processSheet(rawRows, sheetType) {
   const ci = {
     prodi:find("prodi"),  loc:find("location"),  kode:find("kode"),   nama:find("nama"),
     kelas:find("kelas"),  team:find("team teaching"), jam:find("jam"), hari:find("hari"),
-    ruang:find("ruang","ruangan"), status:find("status sesi","status"), sks:find("sks"),
+    ruang:find("ruang","ruangan"), status:find("status sesi","status"), sks:find("sks"), sesi:find("sesi"),
   };
   const result=[], seen=new Set();
   for (let i=1;i<rawRows.length;i++) {
@@ -88,6 +92,7 @@ function processSheet(rawRows, sheetType) {
     const list       = lecturers.length>0?lecturers:[{name:"",sks:1}];
     const statusSesi = ci.status>=0&&row[ci.status]?String(row[ci.status]).trim():"";
     const courseSKS  = ci.sks>=0&&row[ci.sks]?parseFloat(row[ci.sks])||0:0;
+    const baseSesi   = ci.sesi>=0&&row[ci.sesi]?parseInt(row[ci.sesi])||0:0;
     const shared = {
       program:    row[ci.prodi]?String(row[ci.prodi]).trim():(sheetType==="ENMARK"?"ENMARK":""),
       location:   row[ci.loc]?String(row[ci.loc]).trim():"",
@@ -97,12 +102,12 @@ function processSheet(rawRows, sheetType) {
       jam:        row[ci.jam]?String(row[ci.jam]).trim():"",
       hari:       row[ci.hari]?String(row[ci.hari]).trim():"",
       room:       row[ci.ruang]?String(row[ci.ruang]).trim():"",
-      sourceSheet:sheetType, statusSesi, courseSKS,
+      sourceSheet:sheetType, statusSesi, courseSKS, baseSesi,
     };
     for (const {name:lecturer, sks:lecturerSKS} of list) {
       const dateOcc={};
       for (let j=0;j<hdrs.length;j++) {
-        const val=row[j];
+        const val=normalizeXLDate(row[j]);
         if (!isDate(val)) continue;
         const occKey  = dk(val);
         const occIdx  = dateOcc[occKey]||0;
@@ -111,7 +116,16 @@ function processSheet(rawRows, sheetType) {
         const dedup = `${lecturer}|${shared.course}|${shared.class}|${dk(val)}|${time}`;
         if (seen.has(dedup)) continue;
         seen.add(dedup);
-        result.push({ id:`${sheetType}-${i}-${j}-${encodeURIComponent(lecturer)}`, lecturer, lecturerSKS, _rowIndex:i, hasLecturer:!!lecturer, ...shared, date:val, time, sessionType:getSessionType(hdrs[j]), hasRoom:!!shared.room });
+        // Compute sesiCount for this pertemuan: baseSesi for regular sessions, but may be split on exam dates
+        // Header tells us: if column header says "MID EXAM" or "FINAL EXAM", sesi is exam sesi (not full baseSesi for mixed columns)
+        const hdrStr = String(hdrs[j]||"").toLowerCase();
+        const isExam = hdrStr.includes("mid exam") || hdrStr.includes("final exam");
+        let sesiCount = baseSesi;
+        // For mixed exam+regular columns (4 or 6 sesi classes), exam dates get fewer sesi
+        // 4 sesi column: exam dates get 3 sesi (1 regular + 3 exam) — but this row is exam, so 3
+        // 6 sesi column: exam dates get 3 sesi (3 regular + 3 exam) — but this row is exam, so 3
+        // Simplified: if it's an exam column, sesiCount stays as-is (the Sesi column value is exam count)
+        result.push({ id:`${sheetType}-${i}-${j}-${encodeURIComponent(lecturer)}`, lecturer, lecturerSKS, _rowIndex:i, hasLecturer:!!lecturer, ...shared, date:val, time, sessionType:getSessionType(hdrs[j]), hasRoom:!!shared.room, sesiCount });
       }
     }
   }
@@ -641,6 +655,7 @@ export default function ScheduleManager() {
                     {colsVisible.has("course")    &&<SortTh col="course"     label="Course"/>}
                     {colsVisible.has("date")      &&<SortTh col="date"       label="Date"/>}
                     {colsVisible.has("time")      &&<SortTh col="time"       label="Time"/>}
+                    {colsVisible.has("sesi")      &&<th style={S.th}>Sesi</th>}
                     {colsVisible.has("room")      &&<th style={S.th}>Room</th>}
                     {colsVisible.has("location")  &&<SortTh col="location"   label="Location"/>}
                     {colsVisible.has("sessionType")&&<SortTh col="sessionType" label="Type"/>}
@@ -659,6 +674,7 @@ export default function ScheduleManager() {
                           {colsVisible.has("course")    &&<td style={{...S.td,maxWidth:190,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={r.course}><button style={{...S.link,color:filters.course===r.course?"#1d4ed8":"var(--color-text-primary)",maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",display:"block"}} onClick={()=>toggleFilter("course",r.course)} title={r.course}>{r.course}</button></td>}
                           {colsVisible.has("date")      &&<td style={{...S.td,whiteSpace:"nowrap"}}>{fmtDate(r.date)}</td>}
                           {colsVisible.has("time")      &&<td style={{...S.td,whiteSpace:"nowrap",fontSize:12}}>{r.time||<span style={{color:"var(--color-text-secondary)"}}>—</span>}</td>}
+                          {colsVisible.has("sesi")      &&<td style={{...S.td,fontSize:12,textAlign:"center",fontWeight:500}}>{r.sesiCount||"—"}</td>}
                           {colsVisible.has("room")      &&<td style={{...S.td,fontSize:12}}>{r.room||<span style={{color:"var(--color-border-secondary)"}}>—</span>}</td>}
                           {colsVisible.has("location")  &&<td style={S.td}><LocBadge loc={r.location}/></td>}
                           {colsVisible.has("sessionType")&&<td style={S.td}><Badge text={r.sessionType} bg={SESSION_STYLE[r.sessionType]?.bg} color={SESSION_STYLE[r.sessionType]?.text}/></td>}
