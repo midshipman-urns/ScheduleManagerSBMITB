@@ -65,7 +65,11 @@ function parseTimeRange(s) {
   return { start:toMin(nums[0]), end:toMin(nums[nums.length-1]) };
 }
 function timesOverlap(a,b) { const r1=parseTimeRange(a),r2=parseTimeRange(b); return !!(r1&&r2&&r1.start<r2.end&&r2.start<r1.end); }
-function getSessionType(h) { const s=String(h).toLowerCase(); return s.includes("mid")?"Mid Exam":s.includes("final")?"Final Exam":"Session"; }
+function getSessionType(h) { 
+  const s=String(h).toLowerCase(); 
+  const result = s.includes("mid")?"Mid Exam":s.includes("final")?"Final Exam":"Session";
+  return result;
+}
 function fmtDate(d) { return d instanceof Date?d.toLocaleDateString("id-ID",{weekday:"long",day:"numeric",month:"long",year:"numeric"}):""; }
 // dk() uses local date components to avoid timezone issues with UTC-based toISOString()
 function dk(d)      { if (!(d instanceof Date)||isNaN(d)) return ""; return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
@@ -169,34 +173,56 @@ function processSheet(rawRows, sheetType) {
     for (const {name:lecturer, sks:lecturerSKS} of list) {
       const dateOcc={};
       for (let j=0;j<hdrs.length;j++) {
-        // For ENMARK/Executive: use pre-scanned dateColumns to include all sessions even if this lecturer doesn't have them
+        // For ENMARK/Executive: include columns that have dates OR that are in sesiMap (exam columns)
         // For others: check if this cell has a date
-        if ((sheetType === "ENMARK" || sheetType === "Executive") && !dateColumns.has(j)) continue;
+        const inSesiMap = (sheetType === "ENMARK" || sheetType === "Executive") && sesiMap[j] !== undefined;
+        const hasDateCol = (sheetType === "ENMARK" || sheetType === "Executive") && dateColumns.has(j);
+        if ((sheetType === "ENMARK" || sheetType === "Executive") && !hasDateCol && !inSesiMap) continue;
         
         const val=normalizeXLDate(row[j]);
-        if (!isDate(val)) continue;
-        const occKey  = dk(val);
+        const hdr = String(hdrs[j] || "").trim().toUpperCase();
+        const isExam = hdr.includes("MID EXAM") || hdr.includes("FINAL EXAM");
+        
+        
+        // For exams without dates, find a date from another session in the same "exam group"
+        let dateToUse = val;
+        if (!isDate(val)) {
+          if (isExam) {
+            // Find a date from nearby columns to use for this exam
+            for (let k = Math.max(0, j-3); k <= Math.min(hdrs.length-1, j+3); k++) {
+              const testDate = normalizeXLDate(row[k]);
+              if (isDate(testDate)) {
+                dateToUse = testDate;
+                break;
+              }
+            }
+          }
+          if (!isDate(dateToUse)) {
+            continue;
+          }
+        }
+        
+        
+        const occKey  = dk(dateToUse);
         const occIdx  = dateOcc[occKey]||0;
         dateOcc[occKey] = occIdx+1;
-        const time  = getTimeForDate(shared.jam,shared.hari,val,sheetType,statusSesi,occIdx);
-        const dedup = `${lecturer}|${shared.course}|${shared.class}|${dk(val)}|${time}`;
+        const time  = getTimeForDate(shared.jam,shared.hari,dateToUse,sheetType,statusSesi,occIdx);
+        // For exams, include column index to avoid deduplication (each lecturer's exam is separate)
+        const dedup = isExam 
+          ? `${lecturer}|${shared.course}|${shared.class}|${dk(dateToUse)}|${time}|col${j}`
+          : `${lecturer}|${shared.course}|${shared.class}|${dk(dateToUse)}|${time}`;
         if (seen.has(dedup)) continue;
         seen.add(dedup);
         // Compute sesiCount: from Sesi column, or inferred from Executive/ENMARK headers
         let sesiCount = baseSesi;
         if ((sheetType === "ENMARK" || sheetType === "Executive") && sesiMap[j] !== undefined) sesiCount = sesiMap[j];
-        result.push({ id:`${sheetType}-${i}-${j}-${encodeURIComponent(lecturer)}`, lecturer, lecturerSKS, _rowIndex:i, hasLecturer:!!lecturer, ...shared, date:val, time, sessionType:getSessionType(hdrs[j]), hasRoom:!!shared.room, sesiCount });
-        const st = getSessionType(hdrs[j]);
-        if (sheetType === "ENMARK") {
-          console.log(`[ENMARK] Row ${i}, Col ${j}: hdr="${hdrs[j]}" sessionType="${st}" sesiCount=${sesiCount} date=${val}`);
-        }
+        result.push({ id:`${sheetType}-${i}-${j}-${encodeURIComponent(lecturer)}`, lecturer, lecturerSKS, _rowIndex:i, hasLecturer:!!lecturer, ...shared, date:dateToUse, time, sessionType:getSessionType(hdrs[j]), hasRoom:!!shared.room, sesiCount });
       }
     }
   }
   return result;
 }
 
-// All permutations of an array (brute-force, practical for ≤5 lecturers)
 function getPermutations(arr) {
   if (arr.length<=1) return [arr];
   const result=[];
