@@ -225,12 +225,21 @@ function processSheet(rawRows, sheetType) {
         // Compute sesiCount: from Sesi column, or inferred from Executive/ENMARK headers
         let sesiCount = baseSesi;
         if ((sheetType === "ENMARK" || sheetType === "Executive") && sesiMap[j] !== undefined) sesiCount = sesiMap[j];
-        // For Regular "1+UTS" or "1+UAS" columns: exam sesi = 3, regular part = baseSesi - 3
+
         const hdrUp = String(hdrs[j]||"").toUpperCase();
-        if (sheetType === "Regular" && (hdrUp.includes("UTS") || hdrUp.includes("UAS") || hdrUp.includes("MID") || hdrUp.includes("FINAL"))) {
-          sesiCount = 3; // exam portion
+        const isRegularExamCol = sheetType === "Regular" && (hdrUp.includes("UTS") || hdrUp.includes("UAS") || hdrUp.includes("MID") || hdrUp.includes("FINAL"));
+
+        if (isRegularExamCol) {
+          // "1+UTS" or "1+UAS" = (baseSesi - 3) regular sesi + 3 exam sesi
+          const regularPart = Math.max(1, baseSesi - 3);
+          const examType    = getSessionType(hdrs[j]); // "UTS" or "UAS"
+          // Emit regular portion
+          result.push({ id:`${sheetType}-${i}-${j}-${encodeURIComponent(lecturer)}-reg`, lecturer, lecturerSKS, _rowIndex:i, hasLecturer:!!lecturer, ...shared, date:dateToUse, time, sessionType:"Session", hasRoom:!!shared.room, sesiCount:regularPart });
+          // Emit exam portion
+          result.push({ id:`${sheetType}-${i}-${j}-${encodeURIComponent(lecturer)}-exam`, lecturer, lecturerSKS, _rowIndex:i, hasLecturer:!!lecturer, ...shared, date:dateToUse, time, sessionType:examType, hasRoom:!!shared.room, sesiCount:3 });
+        } else {
+          result.push({ id:`${sheetType}-${i}-${j}-${encodeURIComponent(lecturer)}`, lecturer, lecturerSKS, _rowIndex:i, hasLecturer:!!lecturer, ...shared, date:dateToUse, time, sessionType:getSessionType(hdrs[j]), hasRoom:!!shared.room, sesiCount });
         }
-        result.push({ id:`${sheetType}-${i}-${j}-${encodeURIComponent(lecturer)}`, lecturer, lecturerSKS, _rowIndex:i, hasLecturer:!!lecturer, ...shared, date:dateToUse, time, sessionType:getSessionType(hdrs[j]), hasRoom:!!shared.room, sesiCount });
       }
     }
   }
