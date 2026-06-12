@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect } from "react";
+import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
 import { Upload, X, Download, Calendar, BarChart2, ChevronLeft, ChevronRight, Check, AlertTriangle, FileSpreadsheet, MapPin, Moon, Sun, Grid, BookOpen, Eye } from "lucide-react";
 
@@ -460,6 +460,7 @@ export default function ScheduleManager() {
   const [colsVisible,setColsVisible]= useState(DEFAULT_COLS);
   const [showColPicker,setShowColPicker]= useState(false);
   const [weeklyLec,  setWeeklyLec]  = useState("");
+  const rawBufferRef = useRef(null); // stores original file buffer for highlighted export
 
   // Dark mode: inject/remove CSS variable overrides
   useEffect(()=>{
@@ -471,6 +472,7 @@ export default function ScheduleManager() {
 
   // ── XLSX processing ──────────────────────────────────────────────────────────
   const processBuffer = useCallback((buffer, name)=>{
+    rawBufferRef.current = buffer instanceof ArrayBuffer ? buffer.slice(0) : buffer;
     const wb = XLSX.read(new Uint8Array(buffer),{type:"array",cellDates:true});
     const all=[];
     for (const [sName,sType] of [["Regular","Regular"],["Executive","Executive"],["ENMARK","ENMARK"]])
@@ -780,6 +782,106 @@ export default function ScheduleManager() {
     XLSX.writeFile(wb, `Clash_Report_${dk(new Date())}.xlsx`);
   };
 
+  // ── Load ExcelJS dynamically from CDN (needed for cell color support) ────────
+  const loadExcelJS = () => new Promise((resolve, reject) => {
+    if (window.ExcelJS) { resolve(window.ExcelJS); return; }
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js";
+    script.onload  = () => resolve(window.ExcelJS);
+    script.onerror = () => reject(new Error("Failed to load ExcelJS"));
+    document.head.appendChild(script);
+  });
+
+  // ── Export source file with clash cells highlighted ───────────────────────────
+  const [highlightLoading, setHighlightLoading] = useState(false);
+  const exportSourceHighlighted = async () => {
+    if (!rawBufferRef.current) { alert("No file loaded."); return; }
+    if (!clashes.length)       { alert("No clashes detected."); return; }
+    setHighlightLoading(true);
+    try {
+      const ExcelJS = await loadExcelJS();
+
+      // Priority: hard > city > travel (higher = overwrites lower)
+      const PRIORITY = { hard:3, city:2, travel:1 };
+      const FILLS = {
+        hard:   { type:"pattern", pattern:"solid", fgColor:{ argb:"FFFFC7CE" } }, // light red
+        city:   { type:"pattern", pattern:"solid", fgColor:{ argb:"FFFFCC99" } }, // light orange
+        travel: { type:"pattern", pattern:"solid", fgColor:{ argb:"FFFFFF99" } }, // light yellow
+      };
+
+      // Build map: { sheetName: { "excelRow,excelCol": clashType } }
+      // Row ID format: "${sheetType}-${rawRowIdx}-${colIdx}-${lecturer}..."
+      const cellMap = {};
+      for (const c of clashes) {
+        for (const r of c.rows) {
+          if (!r?.id) continue;
+          const match = r.id.match(/^([^-]+)-(\d+)-(\d+)-/);
+          if (!match) continue;
+          const sheetName = match[1];
+          const excelRow  = parseInt(match[2]) + 1; // rawRows is 0-indexed, Excel is 1-indexed
+          const excelCol  = parseInt(match[3]) + 1;
+          if (!cellMap[sheetName]) cellMap[sheetName] = {};
+          const key = `${excelRow},${excelCol}`;
+          // Keep highest-priority clash type for this cell
+          if (!cellMap[sheetName][key] || PRIORITY[c.type] > PRIORITY[cellMap[sheetName][key]]) {
+            cellMap[sheetName][key] = c.type;
+          }
+        }
+      }
+
+      // Load original workbook
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(rawBufferRef.current);
+
+      // Apply fills
+      for (const [sheetName, cells] of Object.entries(cellMap)) {
+        const ws = workbook.getWorksheet(sheetName);
+        if (!ws) continue;
+        for (const [key, clashType] of Object.entries(cells)) {
+          const [row, col] = key.split(",").map(Number);
+          ws.getRow(row).getCell(col).fill = FILLS[clashType];
+        }
+      }
+
+      // Add a legend sheet
+      const legend = workbook.addWorksheet("Clash Legend");
+      legend.columns = [{width:28},{width:52}];
+      [
+        ["CLASH HIGHLIGHT LEGEND", ""],
+        [`Generated: ${new Date().toLocaleDateString("id-ID",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}`, ""],
+        ["",""],
+        ["Color", "Clash Type & Meaning"],
+        ["🔴 Hard Clash (red)",   "Same lecturer, same date, overlapping times — must be resolved"],
+        ["🟠 City Clash (orange)","Same lecturer, same date, different cities — lecturer cannot be in two cities"],
+        ["🟡 Travel Clash (yellow)","Same lecturer, consecutive days, different cities — travel conflict"],
+        ["",""],
+        ["Total clashes highlighted:", clashes.length],
+        ["Hard:", clashes.filter(c=>c.type==="hard").length],
+        ["City:", clashes.filter(c=>c.type==="city").length],
+        ["Travel:", clashes.filter(c=>c.type==="travel").length],
+      ].forEach((row,i) => {
+        const r = legend.addRow(row);
+        if (i === 3) r.font = { bold: true };
+        if (i === 4) r.getCell(1).fill = FILLS.hard;
+        if (i === 5) r.getCell(1).fill = FILLS.city;
+        if (i === 6) r.getCell(1).fill = FILLS.travel;
+      });
+
+      // Download
+      const buf  = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([buf], { type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href = url; a.download = `Master_Sheet_Highlighted_${dk(new Date())}.xlsx`;
+      a.click(); URL.revokeObjectURL(url);
+    } catch(err) {
+      console.error("Highlight export failed:", err);
+      alert(`Export failed: ${err.message}`);
+    } finally {
+      setHighlightLoading(false);
+    }
+  };
+
   // ── Empty state ──────────────────────────────────────────────────────────────
   if (!rows.length) return (
     <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:"60vh",padding:32}}>
@@ -1043,7 +1145,10 @@ export default function ScheduleManager() {
                     <button key={id} onClick={()=>setClashGroupBy(id)} style={clashGroup===id?{...S.btnPrimary,fontSize:12,padding:"4px 12px"}:{...S.btn,fontSize:12,padding:"4px 12px",border:"none",background:"transparent"}}>{label}</button>
                   ))}
                 </div>
-                <div style={{marginLeft:"auto"}}><button style={{...S.btnPrimary,fontSize:12}} onClick={exportClashes}><Download size={13}/> Export Report</button></div>
+                <div style={{marginLeft:"auto",display:"flex",gap:8}}>
+                  <button style={{...S.btnPrimary,fontSize:12}} onClick={exportClashes}><Download size={13}/> Export Report</button>
+                  <button style={{...S.btnPrimary,fontSize:12,background:"#7c3aed"}} onClick={exportSourceHighlighted} disabled={highlightLoading}>{highlightLoading?"Generating…":<><Download size={13}/> Export Highlighted Source</>}</button>
+                </div>
               </div>
 
               {/* Clash groups */}
