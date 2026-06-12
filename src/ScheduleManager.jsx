@@ -809,7 +809,7 @@ export default function ScheduleManager() {
         travel: { type:"pattern", pattern:"solid", fgColor:{ argb:"FFFFFF99" } }, // light yellow
       };
 
-      // Build map: { sheetName: { "excelRow,excelCol": clashType } }
+      // Build map: { sheetName: { excelRow: clashType } }
       // Row ID format: "${sheetType}-${rawRowIdx}-${colIdx}-${lecturer}..."
       const cellMap = {};
       for (const c of clashes) {
@@ -819,12 +819,10 @@ export default function ScheduleManager() {
           if (!match) continue;
           const sheetName = match[1];
           const excelRow  = parseInt(match[2]) + 1; // rawRows is 0-indexed, Excel is 1-indexed
-          const excelCol  = parseInt(match[3]) + 1;
           if (!cellMap[sheetName]) cellMap[sheetName] = {};
-          const key = `${excelRow},${excelCol}`;
-          // Keep highest-priority clash type for this cell
-          if (!cellMap[sheetName][key] || PRIORITY[c.type] > PRIORITY[cellMap[sheetName][key]]) {
-            cellMap[sheetName][key] = c.type;
+          // Keep highest-priority clash type for this row
+          if (!cellMap[sheetName][excelRow] || PRIORITY[c.type] > PRIORITY[cellMap[sheetName][excelRow]]) {
+            cellMap[sheetName][excelRow] = c.type;
           }
         }
       }
@@ -833,13 +831,15 @@ export default function ScheduleManager() {
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.load(rawBufferRef.current);
 
-      // Apply fills
-      for (const [sheetName, cells] of Object.entries(cellMap)) {
+      // Apply fills to entire row (all non-empty cells)
+      for (const [sheetName, rows] of Object.entries(cellMap)) {
         const ws = workbook.getWorksheet(sheetName);
         if (!ws) continue;
-        for (const [key, clashType] of Object.entries(cells)) {
-          const [row, col] = key.split(",").map(Number);
-          ws.getRow(row).getCell(col).fill = FILLS[clashType];
+        for (const [excelRow, clashType] of Object.entries(rows)) {
+          const row = ws.getRow(Number(excelRow));
+          row.eachCell({ includeEmpty: false }, cell => {
+            cell.fill = FILLS[clashType];
+          });
         }
       }
 
