@@ -649,106 +649,135 @@ export default function ScheduleManager() {
   };
   const exportClashes=()=>{
     const wb = XLSX.utils.book_new();
-    const hard = clashes.filter(c=>c.type==="hard");
-    const city = clashes.filter(c=>c.type==="city");
+    const hard   = clashes.filter(c=>c.type==="hard");
+    const city   = clashes.filter(c=>c.type==="city");
     const travel = clashes.filter(c=>c.type==="travel");
     const ackCount = clashes.filter(c=>acked[c.id]).length;
 
-    // ── Sheet 1: Summary ──────────────────────────────────────────────────────
-    const summaryData = [
+    // Helper: full date with day name
+    const fmtD = d => d instanceof Date ? d.toLocaleDateString("id-ID",{weekday:"long",day:"numeric",month:"long",year:"numeric"}) : "—";
+
+    // Helper: pertemuan string
+    const ptStr = r => r?.pertemuan ? `${r.pertemuan}/${r.totalPertemuan}` : "—";
+
+    // Helper: per-lecturer clash counts
+    const lecSummary = {};
+    for (const c of clashes) {
+      if (!lecSummary[c.lecturer]) lecSummary[c.lecturer] = {hard:0,city:0,travel:0,total:0};
+      lecSummary[c.lecturer][c.type]++;
+      lecSummary[c.lecturer].total++;
+    }
+
+    // ── Sheet 1: Summary ─────────────────────────────────────────────────────
+    const now = new Date().toLocaleDateString("id-ID",{weekday:"long",day:"numeric",month:"long",year:"numeric"});
+    const S1 = [
       ["CLASH REPORT — SHORT SEMESTER 2025/2026"],
-      [`Generated: ${new Date().toLocaleDateString("id-ID",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}`],
+      [`Generated: ${now}`],
       [],
-      ["SUMMARY"],
+      ["CLASH OVERVIEW"],
       ["Type","Count","Description"],
-      ["🔴 Hard Clash", hard.length, "Same lecturer, same date, overlapping times"],
-      ["🟠 City Clash", city.length, "Same lecturer, same date, different cities"],
+      ["🔴 Hard Clash",   hard.length,   "Same lecturer, same date, overlapping times — must be resolved"],
+      ["🟠 City Clash",   city.length,   "Same lecturer, same date, different cities — travel conflict"],
       ["🟡 Travel Clash", travel.length, "Same lecturer, consecutive days, different cities"],
-      ["","",""],
-      ["Total Clashes", clashes.length, ""],
-      ["Acknowledged", ackCount, ""],
-      ["Unresolved", clashes.length - ackCount, ""],
+      [],
+      ["","Total", clashes.length],
+      ["","Acknowledged", ackCount],
+      ["","Unresolved", clashes.length - ackCount],
+      [],
+      [],
+      ["CLASHES BY LECTURER"],
+      ["Lecturer","Hard","City","Travel","Total"],
+      ...Object.entries(lecSummary)
+        .sort(([,a],[,b])=>b.total-a.total)
+        .map(([lec,s])=>[lec, s.hard||"", s.city||"", s.travel||"", s.total]),
+      [],
+      [],
+      ["CLASHES BY DATE"],
+      ["Date","Hard","City","Travel","Total"],
+      ...(() => {
+        const byD = {};
+        for (const c of clashes) {
+          const key = dk(c.type==="travel"?c.rows[0]?.date:c.date);
+          const d = c.type==="travel"?c.rows[0]?.date:c.date;
+          if (!byD[key]) byD[key] = {date:d,hard:0,city:0,travel:0,total:0};
+          byD[key][c.type]++; byD[key].total++;
+        }
+        return Object.values(byD).sort((a,b)=>a.date-b.date)
+          .map(({date,hard,city,travel,total})=>[fmtD(date), hard||"", city||"", travel||"", total]);
+      })(),
     ];
-    const ws1 = XLSX.utils.aoa_to_sheet(summaryData);
-    ws1["!cols"] = [{wch:20},{wch:10},{wch:50}];
-    ws1["!merges"] = [{s:{r:0,c:0},e:{r:0,c:2}},{s:{r:1,c:0},e:{r:1,c:2}}];
+    const ws1 = XLSX.utils.aoa_to_sheet(S1);
+    ws1["!cols"] = [{wch:38},{wch:14},{wch:14},{wch:14},{wch:10},{wch:50}];
+    ws1["!merges"] = [{s:{r:0,c:0},e:{r:0,c:4}},{s:{r:1,c:0},e:{r:1,c:4}}];
     XLSX.utils.book_append_sheet(wb, ws1, "Summary");
 
-    // ── Sheet 2: All Clashes grouped by lecturer ──────────────────────────────
-    const byLecRows = [
-      ["#","Type","Lecturer","Clash Date(s)","","Session A","","","","","Session B","","","","","Status","Note"],
-      ["","","","","","Course","Class","Time","Room","Location","Course","Class","Time","Room","Location","",""],
-    ];
-    const grouped = {};
-    for (const c of clashes) {
-      if (!grouped[c.lecturer]) grouped[c.lecturer] = [];
-      grouped[c.lecturer].push(c);
-    }
-    let rowNum = 1;
-    for (const [lec, lclashes] of Object.entries(grouped).sort(([a],[b])=>a.localeCompare(b))) {
-      // Lecturer header row
-      byLecRows.push([lec, `${lclashes.length} clash${lclashes.length>1?"es":""}`, "","","","","","","","","","","","","","",""]);
-      for (const c of lclashes) {
-        const r0 = c.rows[0], r1 = c.rows[1];
-        const dateStr = c.type==="travel"
-          ? `${fmtDate(r0?.date)} → ${fmtDate(r1?.date)}`
-          : fmtDate(c.date);
-        byLecRows.push([
-          rowNum++,
-          CLASH_CFG[c.type].label,
-          "",
-          dateStr,
-          "",
-          r0?.course||"—", r0?.class||"—", r0?.time||"—", r0?.room||"—", r0?.location||"—",
-          r1?.course||"—", r1?.class||"—", r1?.time||"—", r1?.room||"—", r1?.location||"—",
-          acked[c.id]?"✓ Acknowledged":"Unresolved",
-          notes[c.id]||"",
-        ]);
-      }
-      byLecRows.push([]); // spacer
-    }
-    const ws2 = XLSX.utils.aoa_to_sheet(byLecRows);
-    ws2["!cols"] = [{wch:4},{wch:14},{wch:28},{wch:36},{wch:2},{wch:38},{wch:16},{wch:22},{wch:18},{wch:10},{wch:38},{wch:16},{wch:22},{wch:18},{wch:10},{wch:16},{wch:30}];
-    XLSX.utils.book_append_sheet(wb, ws2, "By Lecturer");
+    // ── Helper: build a clash sheet for a given list, grouped by lecturer ─────
+    const COLS = [{wch:4},{wch:16},{wch:32},{wch:38},{wch:12},{wch:12},{wch:38},{wch:16},{wch:22},{wch:18},{wch:10},{wch:2},{wch:38},{wch:16},{wch:22},{wch:18},{wch:10},{wch:18},{wch:32}];
+    const HDR1 = ["#","Type","Lecturer","Date","Pertemuan A","Pertemuan B","Session A — Course","Class","Time","Room","Location","","Session B — Course","Class","Time","Room","Location","Status","Proposed Resolution"];
+    const HDR2 = ["","","","","","","(code + name)","","","","","","(code + name)","","","","","",""];
 
-    // ── Sheet 3: All Clashes grouped by date ─────────────────────────────────
-    const byDateRows = [
-      ["#","Type","Lecturer","Date","","Session A","","","","","Session B","","","","","Status","Note"],
-      ["","","","","","Course","Class","Time","Room","Location","Course","Class","Time","Room","Location","",""],
-    ];
-    const byDate = {};
-    for (const c of clashes) {
-      const key = c.type==="travel" ? dk(c.rows[0]?.date) : dk(c.date);
-      if (!byDate[key]) byDate[key] = {date: c.type==="travel"?c.rows[0]?.date:c.date, items:[]};
-      byDate[key].items.push(c);
-    }
-    let rowNum2 = 1;
-    for (const [, {date, items}] of Object.entries(byDate).sort(([a],[b])=>a.localeCompare(b))) {
-      byDateRows.push([fmtDate(date), `${items.length} clash${items.length>1?"es":""}`, "","","","","","","","","","","","","","",""]);
-      for (const c of items) {
-        const r0 = c.rows[0], r1 = c.rows[1];
-        const dateStr = c.type==="travel"
-          ? `${fmtDate(r0?.date)} → ${fmtDate(r1?.date)}`
-          : fmtDate(c.date);
-        byDateRows.push([
-          rowNum2++,
-          CLASH_CFG[c.type].label,
-          c.lecturer,
-          dateStr,
-          "",
-          r0?.course||"—", r0?.class||"—", r0?.time||"—", r0?.room||"—", r0?.location||"—",
-          r1?.course||"—", r1?.class||"—", r1?.time||"—", r1?.room||"—", r1?.location||"—",
-          acked[c.id]?"✓ Acknowledged":"Unresolved",
-          notes[c.id]||"",
-        ]);
+    const buildSheet = (list, groupBy) => {
+      const rows = [HDR1, HDR2];
+      const groups = {};
+      for (const c of list) {
+        const key = groupBy==="lecturer" ? c.lecturer
+          : dk(c.type==="travel"?c.rows[0]?.date:c.date);
+        const label = groupBy==="lecturer" ? c.lecturer
+          : fmtD(c.type==="travel"?c.rows[0]?.date:c.date);
+        if (!groups[key]) groups[key] = {label, items:[]};
+        groups[key].items.push(c);
       }
-      byDateRows.push([]);
-    }
-    const ws3 = XLSX.utils.aoa_to_sheet(byDateRows);
-    ws3["!cols"] = ws2["!cols"];
-    XLSX.utils.book_append_sheet(wb, ws3, "By Date");
+      let n = 1;
+      for (const {label, items} of Object.values(groups).sort((a,b)=>a.label.localeCompare(b.label))) {
+        // Group header row
+        rows.push([`${label}  (${items.length} clash${items.length>1?"es":""})`, "","","","","","","","","","","","","","","","","",""]);
+        for (const c of items) {
+          const r0 = c.rows[0], r1 = c.rows[1];
+          const dateStr = c.type==="travel"
+            ? `${fmtD(r0?.date)}  →  ${fmtD(r1?.date)}`
+            : fmtD(c.date);
+          rows.push([
+            n++,
+            CLASH_CFG[c.type].label,
+            c.lecturer,
+            dateStr,
+            ptStr(r0),
+            ptStr(r1),
+            r0 ? `${r0.courseCode}  ${r0.course.replace(r0.courseCode,"").trim()}` : "—",
+            r0?.class||"—",
+            r0?.time||"—",
+            r0?.room||"—",
+            r0?.location||"—",
+            "vs",
+            r1 ? `${r1.courseCode}  ${r1.course.replace(r1.courseCode,"").trim()}` : "—",
+            r1?.class||"—",
+            r1?.time||"—",
+            r1?.room||"—",
+            r1?.location||"—",
+            acked[c.id] ? "✓ Acknowledged" : "Unresolved",
+            notes[c.id] || "",
+          ]);
+          // Blank separator after each clash
+          rows.push([]);
+        }
+        // Extra blank between groups
+        rows.push([]);
+      }
+      const ws = XLSX.utils.aoa_to_sheet(rows);
+      ws["!cols"] = COLS;
+      return ws;
+    };
 
-    XLSX.writeFile(wb, "Clash_Report.xlsx");
+    // ── Sheet 2: Hard Clashes ─────────────────────────────────────────────────
+    XLSX.utils.book_append_sheet(wb, buildSheet(hard,   "lecturer"), `🔴 Hard (${hard.length})`);
+
+    // ── Sheet 3: City Clashes ─────────────────────────────────────────────────
+    XLSX.utils.book_append_sheet(wb, buildSheet(city,   "lecturer"), `🟠 City (${city.length})`);
+
+    // ── Sheet 4: Travel Clashes ───────────────────────────────────────────────
+    XLSX.utils.book_append_sheet(wb, buildSheet(travel, "lecturer"), `🟡 Travel (${travel.length})`);
+
+    XLSX.writeFile(wb, `Clash_Report_${dk(new Date())}.xlsx`);
   };
 
   // ── Empty state ──────────────────────────────────────────────────────────────
