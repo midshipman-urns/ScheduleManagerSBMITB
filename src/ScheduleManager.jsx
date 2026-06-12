@@ -1183,7 +1183,7 @@ export default function ScheduleManager() {
                       <div key={lec} style={{...S.card}}>
                         <div style={{padding:"12px 16px",borderBottom:"0.5px solid var(--color-border-tertiary)",display:"flex",alignItems:"center",gap:10}}>
                           <button style={{...S.link,fontWeight:600,fontSize:14}} onClick={()=>{setWeeklyLec(lec);toggleFilterValue("lecturer",lec);}}>{lec}</button>
-                          {lecClashes.length>0&&<button style={{...S.link,fontSize:12,color:"#ef4444"}} onClick={()=>{setFilters({lecturer:lec});setView("clashes");}}>⚠ {lecClashes.length} clash{lecClashes.length>1?"es":""}</button>}
+                          {lecClashes.length>0&&<button style={{...S.link,fontSize:12,color:"#ef4444"}} onClick={()=>{setFilters({lecturer:new Set([lec])});setView("clashes");}}>⚠ {lecClashes.length} clash{lecClashes.length>1?"es":""}</button>}
                         </div>
                         <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:0}}>
                           {DAYS_SHORT.map((d,di)=>(
@@ -1193,7 +1193,7 @@ export default function ScheduleManager() {
                                 {(grid[di]||[]).map((entry,ei)=>{
                                   const locStyle=LOC_STYLE[entry.location]||{bg:"var(--color-background-secondary)",text:"var(--color-text-secondary)"};
                                   return (
-                                    <button key={ei} onClick={()=>{setFilters({course:entry.course,class:entry.class});setView("mcp");}} style={{background:locStyle.bg,color:locStyle.text,border:"none",borderRadius:4,padding:"3px 6px",fontSize:10,cursor:"pointer",textAlign:"left",lineHeight:1.5}}>
+                                    <button key={ei} onClick={()=>{setFilters({courseCode:new Set([entry.courseCode]),class:new Set([entry.class])});setView("mcp");}} style={{background:locStyle.bg,color:locStyle.text,border:"none",borderRadius:4,padding:"3px 6px",fontSize:10,cursor:"pointer",textAlign:"left",lineHeight:1.5}}>
                                       <div style={{fontWeight:600}}>{entry.courseCode}</div>
                                       <div style={{opacity:0.85}}>{entry.class}</div>
                                       {entry.time&&<div style={{opacity:0.7,fontSize:9}}>{entry.time}</div>}
