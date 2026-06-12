@@ -443,6 +443,7 @@ export default function ScheduleManager() {
   const [monthF,     setMonthF]     = useState("all");
   const [locF,       setLocF]       = useState("all");
   const [clashF,     setClashF]     = useState("all");
+  const [clashGroupBy,setClashGroupBy]= useState("lecturer");
   const [calDate,    setCalDate]    = useState(new Date(2026,5,1));
   const [loading,    setLoading]    = useState(false);
   const [fileName,   setFileName]   = useState("");
@@ -638,8 +639,107 @@ export default function ScheduleManager() {
     const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(data),"MCP Output"); XLSX.writeFile(wb,"MCP_Output.xlsx");
   };
   const exportClashes=()=>{
-    const data=filtClashes.map((c,i)=>({No:i+1,Type:CLASH_CFG[c.type].label,Lecturer:c.lecturer,"Date 1":fmtDate(c.rows[0]?.date),"Entry 1":`${c.rows[0]?.course} | ${c.rows[0]?.time} | ${c.rows[0]?.room} | ${c.rows[0]?.location}`,"Date 2":fmtDate(c.rows[1]?.date),"Entry 2":`${c.rows[1]?.course} | ${c.rows[1]?.time} | ${c.rows[1]?.room} | ${c.rows[1]?.location}`,Acknowledged:acked[c.id]?"Yes":"No",Note:notes[c.id]||""}));
-    const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(data),"Clash Report"); XLSX.writeFile(wb,"Clash_Report.xlsx");
+    const wb = XLSX.utils.book_new();
+    const hard = clashes.filter(c=>c.type==="hard");
+    const city = clashes.filter(c=>c.type==="city");
+    const travel = clashes.filter(c=>c.type==="travel");
+    const ackCount = clashes.filter(c=>acked[c.id]).length;
+
+    // ── Sheet 1: Summary ──────────────────────────────────────────────────────
+    const summaryData = [
+      ["CLASH REPORT — SHORT SEMESTER 2025/2026"],
+      [`Generated: ${new Date().toLocaleDateString("id-ID",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}`],
+      [],
+      ["SUMMARY"],
+      ["Type","Count","Description"],
+      ["🔴 Hard Clash", hard.length, "Same lecturer, same date, overlapping times"],
+      ["🟠 City Clash", city.length, "Same lecturer, same date, different cities"],
+      ["🟡 Travel Clash", travel.length, "Same lecturer, consecutive days, different cities"],
+      ["","",""],
+      ["Total Clashes", clashes.length, ""],
+      ["Acknowledged", ackCount, ""],
+      ["Unresolved", clashes.length - ackCount, ""],
+    ];
+    const ws1 = XLSX.utils.aoa_to_sheet(summaryData);
+    ws1["!cols"] = [{wch:20},{wch:10},{wch:50}];
+    ws1["!merges"] = [{s:{r:0,c:0},e:{r:0,c:2}},{s:{r:1,c:0},e:{r:1,c:2}}];
+    XLSX.utils.book_append_sheet(wb, ws1, "Summary");
+
+    // ── Sheet 2: All Clashes grouped by lecturer ──────────────────────────────
+    const byLecRows = [
+      ["#","Type","Lecturer","Clash Date(s)","","Session A","","","","","Session B","","","","","Status","Note"],
+      ["","","","","","Course","Class","Time","Room","Location","Course","Class","Time","Room","Location","",""],
+    ];
+    const grouped = {};
+    for (const c of clashes) {
+      if (!grouped[c.lecturer]) grouped[c.lecturer] = [];
+      grouped[c.lecturer].push(c);
+    }
+    let rowNum = 1;
+    for (const [lec, lclashes] of Object.entries(grouped).sort(([a],[b])=>a.localeCompare(b))) {
+      // Lecturer header row
+      byLecRows.push([lec, `${lclashes.length} clash${lclashes.length>1?"es":""}`, "","","","","","","","","","","","","","",""]);
+      for (const c of lclashes) {
+        const r0 = c.rows[0], r1 = c.rows[1];
+        const dateStr = c.type==="travel"
+          ? `${fmtDate(r0?.date)} → ${fmtDate(r1?.date)}`
+          : fmtDate(c.date);
+        byLecRows.push([
+          rowNum++,
+          CLASH_CFG[c.type].label,
+          "",
+          dateStr,
+          "",
+          r0?.course||"—", r0?.class||"—", r0?.time||"—", r0?.room||"—", r0?.location||"—",
+          r1?.course||"—", r1?.class||"—", r1?.time||"—", r1?.room||"—", r1?.location||"—",
+          acked[c.id]?"✓ Acknowledged":"Unresolved",
+          notes[c.id]||"",
+        ]);
+      }
+      byLecRows.push([]); // spacer
+    }
+    const ws2 = XLSX.utils.aoa_to_sheet(byLecRows);
+    ws2["!cols"] = [{wch:4},{wch:14},{wch:28},{wch:36},{wch:2},{wch:38},{wch:16},{wch:22},{wch:18},{wch:10},{wch:38},{wch:16},{wch:22},{wch:18},{wch:10},{wch:16},{wch:30}];
+    XLSX.utils.book_append_sheet(wb, ws2, "By Lecturer");
+
+    // ── Sheet 3: All Clashes grouped by date ─────────────────────────────────
+    const byDateRows = [
+      ["#","Type","Lecturer","Date","","Session A","","","","","Session B","","","","","Status","Note"],
+      ["","","","","","Course","Class","Time","Room","Location","Course","Class","Time","Room","Location","",""],
+    ];
+    const byDate = {};
+    for (const c of clashes) {
+      const key = c.type==="travel" ? dk(c.rows[0]?.date) : dk(c.date);
+      if (!byDate[key]) byDate[key] = {date: c.type==="travel"?c.rows[0]?.date:c.date, items:[]};
+      byDate[key].items.push(c);
+    }
+    let rowNum2 = 1;
+    for (const [, {date, items}] of Object.entries(byDate).sort(([a],[b])=>a.localeCompare(b))) {
+      byDateRows.push([fmtDate(date), `${items.length} clash${items.length>1?"es":""}`, "","","","","","","","","","","","","","",""]);
+      for (const c of items) {
+        const r0 = c.rows[0], r1 = c.rows[1];
+        const dateStr = c.type==="travel"
+          ? `${fmtDate(r0?.date)} → ${fmtDate(r1?.date)}`
+          : fmtDate(c.date);
+        byDateRows.push([
+          rowNum2++,
+          CLASH_CFG[c.type].label,
+          c.lecturer,
+          dateStr,
+          "",
+          r0?.course||"—", r0?.class||"—", r0?.time||"—", r0?.room||"—", r0?.location||"—",
+          r1?.course||"—", r1?.class||"—", r1?.time||"—", r1?.room||"—", r1?.location||"—",
+          acked[c.id]?"✓ Acknowledged":"Unresolved",
+          notes[c.id]||"",
+        ]);
+      }
+      byDateRows.push([]);
+    }
+    const ws3 = XLSX.utils.aoa_to_sheet(byDateRows);
+    ws3["!cols"] = ws2["!cols"];
+    XLSX.utils.book_append_sheet(wb, ws3, "By Date");
+
+    XLSX.writeFile(wb, "Clash_Report.xlsx");
   };
 
   // ── Empty state ──────────────────────────────────────────────────────────────
@@ -855,54 +955,119 @@ export default function ScheduleManager() {
         )}
 
         {/* ── CLASHES ── */}
-        {view==="clashes"&&(
-          <div>
-            <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap",alignItems:"center"}}>
-              {[["all","All types"],["hard","Hard"],["city","City"],["travel","Travel"]].map(([id,label])=>(
-                <button key={id} onClick={()=>setClashF(id)} style={clashF===id?{...S.btnPrimary}:S.btn}>{label}</button>
-              ))}
-              <div style={{marginLeft:"auto"}}><button style={{...S.btn,color:"var(--color-text-warning)",borderColor:"var(--color-border-warning)"}} onClick={exportClashes}><Download size={14}/> Export report</button></div>
-            </div>
-            {filtClashes.length===0
-              ?<div style={{...S.card,padding:48,textAlign:"center"}}><Check size={32} color="var(--color-text-success)" style={{margin:"0 auto 8px",display:"block"}}/><div style={{color:"var(--color-text-secondary)",fontSize:13}}>No clashes for this filter.</div></div>
-              :<div style={{display:"flex",flexDirection:"column",gap:10}}>
-                {filtClashes.map(c=>{
-                  const cfg=CLASH_CFG[c.type],isAcked=acked[c.id];
-                  return (
-                    <div key={c.id} style={{background:isAcked?"var(--color-background-secondary)":cfg.bg,border:isAcked?"0.5px solid var(--color-border-tertiary)":cfg.border,borderRadius:"var(--border-radius-lg)",padding:16,opacity:isAcked?0.8:1}}>
-                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,flexWrap:"wrap"}}>
-                        <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-                          <Badge text={cfg.label} bg={cfg.bg} color={cfg.text}/>
-                          <button style={{...S.link,fontWeight:500,fontSize:14}} onClick={()=>toggleFilterValue("lecturer",c.lecturer)}>{c.lecturer}</button>
-                          <span style={{fontSize:12,color:"var(--color-text-secondary)"}}>{c.type==="travel"?`${fmtDate(c.rows[0]?.date)} → ${fmtDate(c.rows[1]?.date)}`:fmtDate(c.date)}</span>
-                        </div>
-                        <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                          <button style={{...S.btn,fontSize:11}} onClick={()=>{const lecs=new Set([c.lecturer,...c.rows.map(r=>r?.lecturer).filter(Boolean)]);setFilters({lecturer:lecs});setView("mcp");setOpenFilter(null);}}>↗ Compare clashing lecturers</button>
-                          <button onClick={()=>setAcked(p=>({...p,[c.id]:!p[c.id]}))} style={isAcked?{...S.btnPrimary,fontSize:12}:{...S.btn,fontSize:12}}>{isAcked?<><Check size={12}/> Acknowledged</>:"Acknowledge"}</button>
-                        </div>
-                      </div>
-                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginTop:12}}>
-                        {c.rows.map((r,ri)=>r&&(
-                          <div key={ri} style={{background:"var(--color-background-primary)",borderRadius:"var(--border-radius-md)",padding:12,border:"0.5px solid var(--color-border-tertiary)",fontSize:12,lineHeight:1.9}}>
-                            <div style={{fontWeight:500,color:"var(--color-text-primary)",marginBottom:4,fontSize:13}}><span style={{fontFamily:"monospace",fontSize:11,color:"var(--color-text-secondary)"}}>{r.courseCode} </span>{r.course.replace(r.courseCode,"").trim()}</div>
-                            <div style={{color:"var(--color-text-secondary)",display:"flex",gap:6,alignItems:"center"}}><MapPin size={11}/> <LocBadge loc={r.location}/></div>
-                            <div style={{color:"var(--color-text-secondary)"}}>Time: {r.time||"—"}</div>
-                            <div style={{color:"var(--color-text-secondary)"}}>Room: {r.room||"—"}</div>
-                            <div style={{color:"var(--color-text-secondary)"}}>Class: <button style={{...S.link,fontSize:12}} onClick={()=>toggleFilterValue("class",r.class)}>{r.class}</button></div>
-                            {c.type==="travel"&&<div style={{color:"var(--color-text-secondary)"}}>Date: {fmtDate(r.date)}</div>}
-                            {/* View full course: replace filters with course+class to see all team-teaching members */}
-                            <button style={{...S.link,fontSize:11,marginTop:4,color:"#7c3aed"}} onClick={()=>{setFilters({course:r.course,class:r.class});setView("mcp");}}>↗ View full course</button>
-                          </div>
-                        ))}
-                      </div>
-                      {isAcked&&<div style={{marginTop:10}}><input style={{...S.input,fontSize:12}} placeholder="Add a resolution note…" value={notes[c.id]||""} onChange={e=>setNotes(p=>({...p,[c.id]:e.target.value}))}/></div>}
-                    </div>
-                  );
-                })}
+        {view==="clashes"&&(()=>{
+          const [clashGroup, setClashGroup] = [clashGroupBy, setClashGroupBy];
+          const unacked = filtClashes.filter(c=>!acked[c.id]).length;
+          const hardCount = filtClashes.filter(c=>c.type==="hard").length;
+          const cityCount = filtClashes.filter(c=>c.type==="city").length;
+          const travelCount = filtClashes.filter(c=>c.type==="travel").length;
+
+          // Group clashes
+          const groups = {};
+          for (const c of filtClashes) {
+            const key = clashGroup==="lecturer"
+              ? c.lecturer
+              : dk(c.type==="travel"?c.rows[0]?.date:c.date);
+            const label = clashGroup==="lecturer"
+              ? c.lecturer
+              : fmtDate(c.type==="travel"?c.rows[0]?.date:c.date);
+            if (!groups[key]) groups[key] = {label, items:[]};
+            groups[key].items.push(c);
+          }
+          const sortedGroups = Object.entries(groups).sort(([a],[b])=>a.localeCompare(b));
+
+          return (
+            <div>
+              {/* Summary bar */}
+              <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:14}}>
+                {[
+                  {label:"Hard Clashes", count:hardCount, color:"#dc2626", bg:"#fef2f2", border:"#fecaca"},
+                  {label:"City Clashes", count:cityCount, color:"#d97706", bg:"#fffbeb", border:"#fde68a"},
+                  {label:"Travel Clashes", count:travelCount, color:"#ca8a04", bg:"#fefce8", border:"#fef08a"},
+                  {label:"Unresolved", count:unacked, color:"var(--color-text-primary)", bg:"var(--color-background-secondary)", border:"var(--color-border-secondary)"},
+                ].map(({label,count,color,bg,border})=>(
+                  <div key={label} style={{background:bg,border:`0.5px solid ${border}`,borderRadius:"var(--border-radius-md)",padding:"12px 16px"}}>
+                    <div style={{fontSize:24,fontWeight:700,color,lineHeight:1}}>{count}</div>
+                    <div style={{fontSize:12,color:"var(--color-text-secondary)",marginTop:4}}>{label}</div>
+                  </div>
+                ))}
               </div>
-            }
-          </div>
-        )}
+
+              {/* Controls */}
+              <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap",alignItems:"center"}}>
+                <div style={{display:"flex",gap:4,background:"var(--color-background-secondary)",padding:3,borderRadius:"var(--border-radius-md)"}}>
+                  {[["all","All"],["hard","🔴 Hard"],["city","🟠 City"],["travel","🟡 Travel"]].map(([id,label])=>(
+                    <button key={id} onClick={()=>setClashF(id)} style={clashF===id?{...S.btnPrimary,fontSize:12,padding:"4px 12px"}:{...S.btn,fontSize:12,padding:"4px 12px",border:"none",background:"transparent"}}>{label}</button>
+                  ))}
+                </div>
+                <div style={{display:"flex",gap:4,background:"var(--color-background-secondary)",padding:3,borderRadius:"var(--border-radius-md)"}}>
+                  {[["lecturer","By Lecturer"],["date","By Date"]].map(([id,label])=>(
+                    <button key={id} onClick={()=>setClashGroupBy(id)} style={clashGroup===id?{...S.btnPrimary,fontSize:12,padding:"4px 12px"}:{...S.btn,fontSize:12,padding:"4px 12px",border:"none",background:"transparent"}}>{label}</button>
+                  ))}
+                </div>
+                <div style={{marginLeft:"auto"}}><button style={{...S.btnPrimary,fontSize:12}} onClick={exportClashes}><Download size={13}/> Export Report</button></div>
+              </div>
+
+              {/* Clash groups */}
+              {filtClashes.length===0
+                ?<div style={{...S.card,padding:48,textAlign:"center"}}><Check size={32} color="var(--color-text-success)" style={{margin:"0 auto 8px",display:"block"}}/><div style={{color:"var(--color-text-secondary)",fontSize:13}}>No clashes for this filter.</div></div>
+                :<div style={{display:"flex",flexDirection:"column",gap:16}}>
+                  {sortedGroups.map(([key,{label,items}])=>(
+                    <div key={key}>
+                      {/* Group header */}
+                      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+                        <span style={{fontSize:13,fontWeight:600,color:"var(--color-text-primary)"}}>{label}</span>
+                        <span style={{fontSize:11,color:"var(--color-text-secondary)",background:"var(--color-background-secondary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:10,padding:"1px 8px"}}>{items.length} clash{items.length>1?"es":""}</span>
+                        <div style={{flex:1,height:"0.5px",background:"var(--color-border-tertiary)"}}/>
+                      </div>
+                      {/* Clash cards */}
+                      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                        {items.map(c=>{
+                          const cfg=CLASH_CFG[c.type], isAcked=acked[c.id];
+                          return (
+                            <div key={c.id} style={{background:isAcked?"var(--color-background-secondary)":cfg.bg, border:isAcked?"0.5px solid var(--color-border-tertiary)":cfg.border, borderRadius:"var(--border-radius-lg)", padding:14, opacity:isAcked?0.75:1}}>
+                              {/* Card header */}
+                              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,marginBottom:10,flexWrap:"wrap"}}>
+                                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                                  <Badge text={cfg.label} bg={cfg.bg} color={cfg.text}/>
+                                  {clashGroup==="date"&&<button style={{...S.link,fontWeight:600,fontSize:13}} onClick={()=>toggleFilterValue("lecturer",c.lecturer)}>{c.lecturer}</button>}
+                                  {clashGroup==="lecturer"&&<span style={{fontSize:12,color:"var(--color-text-secondary)"}}>{c.type==="travel"?`${fmtDate(c.rows[0]?.date)} → ${fmtDate(c.rows[1]?.date)}`:fmtDate(c.date)}</span>}
+                                </div>
+                                <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                                  <button style={{...S.btn,fontSize:11}} onClick={()=>{const lecs=new Set([c.lecturer,...c.rows.map(r=>r?.lecturer).filter(Boolean)]);setFilters({lecturer:lecs});setView("mcp");setOpenFilter(null);}}>↗ Compare in MCP</button>
+                                  <button onClick={()=>setAcked(p=>({...p,[c.id]:!p[c.id]}))} style={isAcked?{...S.btnPrimary,fontSize:11}:{...S.btn,fontSize:11}}>{isAcked?<><Check size={11}/> Acknowledged</>:"Acknowledge"}</button>
+                                </div>
+                              </div>
+                              {/* Side-by-side sessions */}
+                              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                                {c.rows.map((r,ri)=>r&&(
+                                  <div key={ri} style={{background:"var(--color-background-primary)",borderRadius:"var(--border-radius-md)",padding:"10px 12px",border:"0.5px solid var(--color-border-tertiary)"}}>
+                                    <div style={{fontSize:11,fontWeight:600,color:"var(--color-text-secondary)",textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:6}}>{ri===0?"Session A":"Session B"}</div>
+                                    <div style={{fontWeight:600,fontSize:13,color:"var(--color-text-primary)",marginBottom:6,lineHeight:1.4}}><span style={{fontFamily:"monospace",fontSize:11,color:"var(--color-text-secondary)"}}>{r.courseCode} </span>{r.course.replace(r.courseCode,"").trim()}</div>
+                                    <div style={{display:"flex",flexDirection:"column",gap:3,fontSize:12,color:"var(--color-text-secondary)"}}>
+                                      {c.type==="travel"&&<div>📅 {fmtDate(r.date)}</div>}
+                                      <div>🕐 {r.time||"—"}</div>
+                                      <div>🏫 {r.room||"—"}</div>
+                                      <div style={{display:"flex",alignItems:"center",gap:6}}>📍 <LocBadge loc={r.location}/></div>
+                                      <div>👥 <button style={{...S.link,fontSize:12}} onClick={()=>toggleFilterValue("class",r.class)}>{r.class}</button></div>
+                                    </div>
+                                    <button style={{...S.link,fontSize:11,marginTop:6,color:"#7c3aed"}} onClick={()=>{setFilters({courseCode:new Set([r.courseCode]),class:new Set([r.class])});setView("mcp");}}>↗ View full course</button>
+                                  </div>
+                                ))}
+                              </div>
+                              {/* Note input */}
+                              {isAcked&&<div style={{marginTop:8}}><input style={{...S.input,fontSize:12}} placeholder="Add a resolution note…" value={notes[c.id]||""} onChange={e=>setNotes(p=>({...p,[c.id]:e.target.value}))}/></div>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              }
+            </div>
+          );
+        })()}
 
         {/* ── CALENDAR ── */}
         {view==="calendar"&&(()=>{
