@@ -13,8 +13,8 @@ const CLASH_CFG  = {
 };
 const SESSION_STYLE = {
   "Session":    { bg:"var(--color-background-secondary)", text:"var(--color-text-secondary)" },
-  "Mid Exam":   { bg:"var(--color-background-warning)",   text:"var(--color-text-warning)" },
-  "Final Exam": { bg:"var(--color-background-danger)",    text:"var(--color-text-danger)" },
+  "UTS":        { bg:"var(--color-background-warning)",   text:"var(--color-text-warning)" },
+  "UAS":        { bg:"var(--color-background-danger)",    text:"var(--color-text-danger)" },
 };
 const LOC_STYLE     = { Jakarta:{bg:"#dbeafe",text:"#1e40af"}, Bandung:{bg:"#dcfce7",text:"#166534"} };
 const FILTER_LABELS = { lecturer:"Lecturer", class:"Class", program:"Program", course:"Course", courseCode:"Code", sheet:"Sheet" };
@@ -67,8 +67,7 @@ function parseTimeRange(s) {
 function timesOverlap(a,b) { const r1=parseTimeRange(a),r2=parseTimeRange(b); return !!(r1&&r2&&r1.start<r2.end&&r2.start<r1.end); }
 function getSessionType(h) { 
   const s=String(h).toLowerCase(); 
-  const result = s.includes("mid")?"Mid Exam":s.includes("final")?"Final Exam":"Session";
-  return result;
+  return s.includes("uts")?"UTS":s.includes("uas")?"UAS":s.includes("mid")?"UTS":s.includes("final")?"UAS":"Session";
 }
 function fmtDate(d) { return d instanceof Date?d.toLocaleDateString("id-ID",{weekday:"long",day:"numeric",month:"long",year:"numeric"}):""; }
 // dk() uses local date components to avoid timezone issues with UTC-based toISOString()
@@ -85,11 +84,20 @@ function processSheet(rawRows, sheetType) {
   // For ENMARK: headers are in row 1 (row 0 has PERTEMUAN); for others: row 0
   const headerRowIdx = sheetType === "ENMARK" ? 1 : 0;
   const hdrs = rawRows[headerRowIdx]||[];
-  const find  = (...names) => { for (const n of names){const i=hdrs.findIndex(h=>h&&String(h).toLowerCase().trim()===n.toLowerCase());if(i>=0)return i;} return -1; };
+  const findH = (...names) => { for (const n of names){const i=hdrs.findIndex(h=>h&&String(h).toLowerCase().replace(/\s+/g," ").trim().startsWith(n.toLowerCase()));if(i>=0)return i;} return -1; };
   const ci = {
-    prodi:find("prodi"),  loc:find("location"),  kode:find("kode"),   nama:find("nama"),
-    kelas:find("kelas"),  team:find("team teaching"), jam:find("jam"), hari:find("hari"),
-    ruang:find("ruang","ruangan"), status:find("status sesi","status"), sks:find("sks"), sesi:find("sesi"),
+    prodi: findH("prodi"),
+    loc:   findH("lokasi","location"),
+    kode:  findH("kode"),
+    nama:  findH("nama mata kuliah","nama"),
+    kelas: findH("kelas"),
+    team:  findH("team teaching"),
+    jam:   findH("jam"),
+    hari:  findH("hari"),
+    ruang: findH("ruang","ruangan"),
+    status:findH("jenis pertemuan","status sesi","status"),
+    sks:   findH("sks"),
+    sesi:  findH("sesi"),
   };
   const result=[], seen=new Set();
   
@@ -121,12 +129,13 @@ function processSheet(rawRows, sheetType) {
         const hdr = String(hdrs[j] || "").trim().toUpperCase();
         const cellVal = firstDataRow[j];
         if (isDate(normalizeXLDate(cellVal))) {
-          if (hdr.includes("MID EXAM")) {
+          // "UTS" or "UAS" or contains "MID"/"FINAL" → 3 sesi exam
+          if (hdr.includes("UTS") || hdr.includes("UAS") || hdr.includes("MID") || hdr.includes("FINAL")) {
             sesiMap[j] = 3;
-          } else if (hdr.includes("FINAL EXAM")) {
-            sesiMap[j] = 3;
-          } else if (/^\d+$/.test(hdr)) {
-            sesiMap[j] = parseInt(hdr) || 0;
+          } else {
+            // "11 Sesi" → 11, "5 Sesi" → 5, "10 Sesi" → 10, "2 Sesi" → 2, plain "5" → 5
+            const numMatch = hdr.match(/(\d+)/);
+            if (numMatch) sesiMap[j] = parseInt(numMatch[1]) || 0;
           }
         }
       }
@@ -181,7 +190,7 @@ function processSheet(rawRows, sheetType) {
         
         const val=normalizeXLDate(row[j]);
         const hdr = String(hdrs[j] || "").trim().toUpperCase();
-        const isExam = hdr.includes("MID EXAM") || hdr.includes("FINAL EXAM");
+        const isExam = hdr.includes("UTS") || hdr.includes("UAS") || hdr.includes("MID") || hdr.includes("FINAL");
         
         
         // For exams without dates, find a date from another session in the same "exam group"
@@ -216,6 +225,11 @@ function processSheet(rawRows, sheetType) {
         // Compute sesiCount: from Sesi column, or inferred from Executive/ENMARK headers
         let sesiCount = baseSesi;
         if ((sheetType === "ENMARK" || sheetType === "Executive") && sesiMap[j] !== undefined) sesiCount = sesiMap[j];
+        // For Regular "1+UTS" or "1+UAS" columns: exam sesi = 3, regular part = baseSesi - 3
+        const hdrUp = String(hdrs[j]||"").toUpperCase();
+        if (sheetType === "Regular" && (hdrUp.includes("UTS") || hdrUp.includes("UAS") || hdrUp.includes("MID") || hdrUp.includes("FINAL"))) {
+          sesiCount = 3; // exam portion
+        }
         result.push({ id:`${sheetType}-${i}-${j}-${encodeURIComponent(lecturer)}`, lecturer, lecturerSKS, _rowIndex:i, hasLecturer:!!lecturer, ...shared, date:dateToUse, time, sessionType:getSessionType(hdrs[j]), hasRoom:!!shared.room, sesiCount });
       }
     }
@@ -248,7 +262,7 @@ function redistributeTeamTeachingDates(allRows) {
       for (const r of rows){if(r.sessionType!==type)continue;const k=dk(r.date);if(!seen.has(k)){seen.add(k);out.push(r.date);}}
       return out.sort((a,b)=>a-b);
     };
-    const regularDates=uniqueSorted("Session"), midDates=uniqueSorted("Mid Exam"), finalDates=uniqueSorted("Final Exam");
+    const regularDates=uniqueSorted("Session"), midDates=uniqueSorted("UTS"), finalDates=uniqueSorted("UAS");
 
     const lecMap={};
     for (const r of rows){
